@@ -1,0 +1,200 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=1555
+
+
+
+ Features:
+
+    Gets you where you're going with the minimum possible keystrokes:
+
+        Each key stroke is completed as it is typed.  Since I used <Tab>
+        and ^D constantly, I figured, why not make it the default?
+
+        A directory listing is maintained in a separate window.  The clean,
+        scrollable/editable directory/file completion list is in a regular
+        Vim window.
+
+        A history is maintained individually for directories and files
+        accessed.
+
+        The completion is optimized for fast directory browsing, and file
+        opening.
+
+        You can create aliases for any directory/file.  So, if you've set an
+        alias for '1', then ':cd 1<cr>' moves to that directory.
+
+
+
+    Key Commands:
+
+    ^H <BS>     The backspace keys are a combination of single char backspace
+                and immediate history "rollback".  They attempt to go back to
+                the first valid directory completion point.
+
+    ^W          Erase backwards a word/directory.
+
+    ^U          Clear the line.
+
+    <TAB>       Rotate through the current list.
+    <S-TAB>     
+
+    <CR>        Execute a "cd" command to the currently shown directory.
+
+                If <CR> is typed in the display window, the name under the
+                cursor will be copied to the command line.
+
+    <ESC>       Jump into the __CD__ display window.   <ESC> jumps back.
+                <CR> selects and jumps back.  Changes made to history lists
+                in the buffer are saved to the global history vars.
+
+    <C-F>       ^F opens the command edit window.
+
+    <C-C>       ^C quits without changing directories.
+
+    <C-N>       Forward/backward in the directory/file history.
+    <C-P>       
+
+    /           Can have special actions, see 'Navigating'
+
+    <C-L>       Refresh
+
+    <C-E>       Scroll one line
+    <C-Y>
+    <C-D>       Scroll page
+    <C-B>
+                Note : it is almost as easy to do your scrolling using
+                <ESC> to bounce to/from the display window.
+
+
+    Other Commands:
+
+        The built-in commands are implemented as aliases (as are pc-drive
+        names).  You can override them, but then it's up to you to create
+        new ones.  Enter commands after a trailing  / .
+
+    'set '      Set an alias to the current directory displayed.
+
+    'delete '   Delete an alias.
+
+    'o pt '     Sets options.  (o<SPACE>pt is to force it to match sooner.)
+        
+            -   Set display column wrap width.  Set to 0 for auto-sizing to
+                longest path name.
+
+            -   Auto-change directory.  (default is 'local', as in 'lcd')
+
+            -   Recan for pc drives, and create 'C:/' style aliases.
+
+            -   Match collapses (shortens) listings (default on; off means
+                always show full directory listing).
+
+            -   Toggle highlighting on/off
+
+
+    'sort '     Sets sorting type. (default==alpha, time, size)
+
+    'long'      Long listing toggle (sets wrap, fsize, etc.)
+
+    'help '     This listing.
+
+    'history '  Browse the history.  A separate history is accessed
+                depending on whether the current command is 'cd' or 'lcd',
+                or some other file oriented command like 'e' or 'new'.
+
+    'edit '     Switch to 'open/edit' file mode.
+    'new '      
+
+    ': '        Input other ex command.  I.e.  :vimgrep aug<CR>
+                will prepend as ':vimgrep aug /someroot/somefiles*'
+
+
+            Most of these can be abbreviated as first-char<space>  .
+
+
+        Note:   Spaces might not be displayed at the end of a line due to
+                some problem with 'echo' and 'input()'.
+
+
+    Navigating:
+
+        Every character typed will be treated as part of a directory or alias,
+        and the display will change accordingly.  Unmatched characters will
+        generally be discarded.  This takes a little getting used to, since
+        you might tend to type ahead more than will match (see also // below ).
+
+        The  /  character is somewhat special.  If you add a slash after a
+        directory name, it moves the display to that directory, and sets the
+        current 'input' value to null.  Therefore, typing aliases is best done
+        after a trailing  /  char.
+
+        Literal input:
+
+            '//' must be used to enter non-existing names.
+
+            Adding a / to the end of a line which already ends in / will
+            toggle the  'g:CD_any_input'  option (default off).
+            Normally, keys which don't match anything are thrown away unless
+            this option == 1.  It also affects what names can be taken
+            from the ^N/^P history.  Aliases are not completed, and must be
+            entered as .../full_alias<space>/
+
+
+
+    Aliases:
+
+    -   Aliases automatically have a space added after them to help
+        distinguish from directories of the same name.
+
+    -   Best way to see all aliases is to clear the line with ^U
+
+
+
+
+    Customizing:
+
+        The default key mapping is:
+
+            cnoremap <silent> <expr> e<space> ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('e') : 'e' )
+            cnoremap <expr> cd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('cd') : 'cd' )
+            cnoremap <expr> lcd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('lcd') : 'lcd' )
+        
+        a simpler keymap might be:
+            nnoremap <leader>cd :call CD_Plus('cd')<CR>
+
+        There is a list of globals,  following the script header, which you
+        can change.  There are a few more, but these are the simple ones,
+        which can also be set via option aliases.
+
+            g:CD_rc_file                default: $HOME . '/.vim_cd_plus'
+                                    Most globals and history are saved
+                                    here.
+
+            g:CD_autochdir          'off', 'local', or 'global'
+
+            g:CD_dsp_wrap_len       default 19, specifies display column
+                                    wrapping.
+
+            g:CD_any_input          0 or 1, the starting value for literal
+                                    input (also set by trailing // toggle).
+
+            g:CD_scan_pc_drives     0 or 1, whether to attempt to discover
+                                    pc drive names (like C:, D:, etc.) and
+                                    create aliases for them.
+
+        If you want to customize the highlighting or sorting, it's a little
+        more complicated.  For highlighting, there is an 'init' function
+        that needs to be changed.  For sorting, an entry must be added to
+        the g:CD_aliases dict var (see top of script), and a new function
+        must be defined to do the sorting.  See the Sort_by_ftime() or
+        Sort_by_extension() functions for examples.
+
+
+
+    Caveats:
+
+    -   Works only with 'shellslash' on.
+    -   Restoring the command line height is a true pain in the ass.  It
+        works most of the time, though that is little consolation.
+    -   Tabbing is a little slow on large directory lists because of the
+        redraw requirement.  It isn't much a problem, though since it's only
+        noticable when you hold the tab key down.
+
