@@ -12,7 +12,15 @@
 " Requirements:	Vim 7
 "
 " Version:		1.0		Mon May 22, 05/22/2006 10:30:52 AM
-" 						- initial release
+" 						-	initial release
+"
+" Version:		1.5		Thu Jun 01, 06/01/2006 9:13:39 AM
+" 						-	many minor fixes
+" 						-	added filename completion, and quick switch to
+"	 						edit, etc., and cmap e<space> .....
+"	 					-	added separate directory and filename
+"	 						histories.
+"	 					-	will try to create intermediate directories.
 "
 "
 "
@@ -23,12 +31,13 @@
 " 		Each key stroke is completed as it is typed, and a directory
 " 		listing is maintained in a separate window.
 "
-" 		The completion is optimized for directory browsing.
+" 		The completion is optimized for fast directory browsing, and file
+" 		opening.
 "
 " 		You can create aliases for any directory.  So, if you've set an
 " 		alias for '1', then ':cd 1<cr>' moves to that directory.
 "
-" 
+"
 " Start_help_section {{{
 "
 "	Key Commands:
@@ -41,14 +50,21 @@
 "
 "	^U			Clear the line.
 "
+"	<TAB>		Rotate through the current list.
+"	<S-TAB>		
+"
 "	<CR>		Execute a "cd" command to the currently shown directory.
 "
 "	<ESC>		Jump into the __CD__ display window.   <ESC> jumps back.
+"				<CR> selects and jumps back.  Changes made to history lists
+"				in the buffer are saved to the global history vars.
 "
 "	<C-C>		^C quits without changing directories.
 "
-"	<C-N>		Forward/backward in the directory history
+"	<C-N>		Forward/backward in the directory/file history.
 "	<C-P>		
+"
+"	/			Can have special actions, see 'Navigating'
 "
 "
 "
@@ -58,13 +74,21 @@
 "		names).  You can override them, but then it's up to you to create
 "		new ones.
 "
-"	'set :'		Set an alias to the last directory displayed.
+"	'set '		Set an alias to the last directory displayed.
 "
-"	'delete :'	Delete an alias.
+"	'delete '	Delete an alias.
 "
-"	'help : '	This listing.
+"	'help '		This listing.
 "
-"	'history :'	Browse the directory history.
+"	'history '	Browse the directory history.
+"
+"	'edit '		Switch to edit mode.
+"
+"	':'			Input other command.  <SPACE> finishes.
+"
+"
+"		Note:	Spaces might not be displayed at the end of a line due to
+"				some problem with 'echo' and 'input()'.
 "
 "
 "	Navigating:
@@ -77,6 +101,19 @@
 "		directory name, it moves the display to that directory, and sets the
 "		current 'input' value to null.  Therefore, typing aliases is best done
 "		after a trailing  /  char.
+"
+"		Literal input:
+"
+"			'//' must be used to enter non-existing names.
+"
+"			Adding a / to the end of a line which already ends in / will
+"			toggle the  'g:Allow_any_input'  option (default off).
+"			Normally, keys which don't match anything are thrown away unless
+"			this option == 1.  It also affects what names can be taken
+"			from the ^N/^P history.  Aliases are not completed, and must be
+"			entered as .../full_alias<space>/
+"
+"
 "
 "	Aliases:
 "
@@ -97,8 +134,8 @@
 "		a simpler keymap might be:
 "			nnoremap <leader>cd :call CD_Plus('cd')<CR>
 "
-"		let g:Cd_history_max = 100
-"		let g:Cd_scan_pc_drives = 0
+"		let g:CD_dir_history_max = 100
+"		let g:CD_scan_pc_drives = 0
 "		let s:RC_file = $HOME . '/.vim_cd_plus'
 "
 "
@@ -122,35 +159,56 @@ if v:version < 700
 endif
 
 
-if !exists('g:Cd_aliases')			| let g:Cd_aliases = {} | endif
-if !exists('g:Cd_scan_pc_drives')	| let g:Cd_scan_pc_drives = 0 | endif
-if !exists('g:Cd_history')			| let g:Cd_history = [] | endif
-if !exists('g:Cd_history_max')		| let g:Cd_history_max = 100 | endif
-let s:Cd_history_idx = 0
+if !exists('g:CD_aliases')					| let g:CD_aliases = {} 			| endif
+if !exists('g:CD_scan_pc_drives')			| let g:CD_scan_pc_drives = 0		| endif
+if !exists('g:CD_path_history')				| let g:CD_path_history = []		| endif
+if !exists('g:CD_path_history_max')			| let g:CD_path_history_max = 100	| endif
+if !exists('g:CD_dir_history')				| let g:CD_dir_history = []			| endif
+if !exists('g:CD_dir_history_max')			| let g:CD_dir_history_max = 100	| endif
+if !exists('g:CD_Plus_name_wrap_len')		| let g:CD_Plus_name_wrap_len = 19	| endif
+if !exists('g:Allow_any_input')				| let g:Allow_any_input = 0			| endif
+let s:CD_history_idx = -1
 
 
-call extend( g:Cd_aliases, { 
-				\ 'set' : 'set :', 's ' : 'set :'
-				\ , 'delete' : 'delete :', 'd ' : 'delete :' 
-				\ , 'help' : 'help :'
-				\ , 'history' : 'history :'
+call extend( g:CD_aliases, { 
+				\   'set '		: 'set :',		's ' : 'set :'
+				\ , 'cd '		: 'cd :' 
+				\ , 'lcd '		: 'lcd :' 
+				\ , 'delete '	: 'delete :',	'd ' : 'delete :' 
+				\ , 'edit '		: 'edit :',		'e ' : 'edit :' 
+				\ , 'new '		: 'new :'
+				\ , 'help '		: 'help :'
+				\ , 'history '	: 'history :'
 				\ } 
 				\ )
+				"\ , ':' : 'excmd :'
+				" Note: ':' isn't handled by s:Do_commands anymore
 
-if g:Cd_scan_pc_drives
+
+function! s:is_command( cmd )
+	let cmd = tolower( s:fnamemodify_pc( a:cmd, ':t' ) )
+	if has_key( g:CD_aliases, cmd )
+	\ && g:CD_aliases[ cmd ] =~ ':$'
+		return g:CD_aliases[ cmd ]
+	endif
+	return ""
+endfunction
+
+
+
+if g:CD_scan_pc_drives
 	for i in range( 0, 255 ) 
 		let a = nr2char(i)
 		if a !~# '[A-Z]' | continue | endif
 		let dir = a . ':'
-		if has_key( g:Cd_aliases, dir ) | continue | endif
+		if has_key( g:CD_aliases, dir ) | continue | endif
 		if isdirectory( dir )
-			let g:Cd_aliases[ dir ] = dir . '/'
+			let g:CD_aliases[ dir ] = dir . '/'
 		endif
 	endfor
 endif
 
 
-let s:Commands_patt = '^\(set\|delete\|help\|history\) '
 
 let s:RC_file = $HOME . '/.vim_cd_plus'
 if filereadable( s:RC_file )
@@ -161,16 +219,16 @@ endif
 
 
 
-let s:tab_dir_list = []
-let s:tab_dir_list_idx = -1
+function! CD_Plus( cmd, path )
 
-function! CD_Plus( cd_cmd )
+	let s:tab_path_list = []
+	let s:tab_path_list_idx = -1
 
-	if a:cd_cmd =~? '\(cd\|lcd\)'
-	else
-		echomsg "CD_Plus: bad command argument."
-		return ''
-	endif
+	let s:CD_history_idx = -1
+
+	let s:inputting_ex = 0
+
+	let s:Cmd = a:cmd
 
 	let old_cwd = getcwd()
 
@@ -186,13 +244,14 @@ function! CD_Plus( cd_cmd )
 	endif
 
 
-	let prompt = ":" . a:cd_cmd . " "
 	
 	let inp_char= ''
 	let inp_stack = []
-	let inp = getcwd() . '/'
+
+	let inp = a:path == '' ? getcwd() . '/' : a:path
+
 	call s:Add_input_stack( inp_stack, inp )
-	let dirs = s:Get_dirs( inp )
+	let paths = s:Get_paths( inp )
 
 	let &cmdheight = 1
 
@@ -208,33 +267,40 @@ function! CD_Plus( cd_cmd )
 	else
 		try
 			silent wincmd b
-			let s = &splitbelow
+			let sv = &splitbelow
 			set splitbelow
-			silent 6 split
-			let &splitbelow = s
-			setlocal bufhidden=hide
+			silent botright 6 split
+			let &splitbelow = sv
 			if bufnr > -1
 				silent exe 'buf ' . bufnr
 			else
 				silent edit __CD__
 			endif
+			setlocal bufhidden=hide
 		catch
 		finally
 			"
 			" Attempt to find a reliable way to reset cmdheight:
 			"
-			aug Cd_auto
-				au!
-				exe "au BufHidden <buffer> set cmdheight=" . s:save_cmdheight
-			aug END
-			exe "nmap <silent> <buffer> <esc> <esc>:set cmdheight=" . s:save_cmdheight . "<CR>:cd"
+"			aug Cd_auto
+"				au!
+"				exe "au BufHidden <buffer> set cmdheight=" . s:save_cmdheight
+"			aug END
+			"exe "nmap <silent> <buffer> <esc> <esc>:set cmdheight=" . s:save_cmdheight . "<CR>:cd"
 		endtry
 	endif
 	silent let s:cd_winheight = 6
 	silent set buftype=nofile
 	silent set noswapfile
 
+
+
+	" ----------------------------------------------------------------------
+	"
+	"  Main processing loop, getchar() called
+	"
 	while 1
+
 		let &cmdheight = 1
 		let winnr = bufwinnr( bufnr("__CD__") )
 		exe winnr . " wincmd w"
@@ -243,13 +309,13 @@ function! CD_Plus( cd_cmd )
 
 
 		if inp == ''
-			let dirs = s:Get_dirs( $HOME . '/' )
+			let paths = s:Get_paths( $HOME . '/' )
 		else
-			let dirs = s:Get_dirs( inp )
+			let paths = s:Get_paths( inp )
 		endif
-		if len( dirs ) < 1
-			let dirs = s:Get_dirs( inp . '/' )
-			if len( dirs ) > 0
+		if len( paths ) < 1
+			let paths = s:Get_paths( inp . '/' )
+			if len( paths ) > 0
 				let inp .= '/'
 			endif
 		endif
@@ -258,87 +324,141 @@ function! CD_Plus( cd_cmd )
 		let replace_trailing = matchstr( inp, '/*$' )
 		let inp_tail = s:fnamemodify_pc( inp, ':t' )
 
-		let matching_dirs = s:Get_matching_dirs( dirs, inp )
+		let matching_paths = s:Get_matching_paths( paths, inp )
 
 		let matching_aliases = s:Get_matching_aliases( inp_tail )
 	
 
-		let matching_dir_tails = map( deepcopy( matching_dirs ), 
+		let matching_path_tails = map( deepcopy( matching_paths ), 
 					\ 's:fnamemodify_pc( v:val, ":t" ) ' )
-		let longest_dir = s:Get_longest_common_dir( matching_dirs )
+		let longest_path = s:Get_longest_common_path( matching_paths )
 		let longest_alias = s:Get_longest_common_alias( matching_aliases )
-		let longest_common = s:Get_longest_common_prefix( matching_dir_tails + matching_aliases )
+		let longest_common = s:Get_longest_common_prefix( matching_path_tails + matching_aliases )
 
 
 		" Give priority to directory name in current directory, over same
 		" alias name:
 		"
-		if has_key( g:Cd_aliases, longest_common )
-					\&& len( matching_dirs ) < 1
-					"\&& longest_dir !~ longest_alias
-			let longest_dir = g:Cd_aliases[ longest_alias ] 
-			let matching_dirs = s:Get_dirs( longest_dir . '/' )
+		if has_key( g:CD_aliases, longest_common )
+					\&& len( matching_paths ) < 1
+					"\&& longest_path !~ longest_alias
+			let longest_path = g:CD_aliases[ longest_alias ] 
+			let matching_paths = s:Get_paths( longest_path . '/' )
 			let replace_trailing = '/'
 
 		elseif inp == '' && longest_common == ''
-			let longest_dir = ''
+			let longest_path = ''
 
 		elseif inp != ''
-			let longest_dir = s:fnamemodify_pc( inp, ':h' )
-			let longest_dir = substitute( longest_dir, '/*$', '/', '' )
-			let longest_dir .= longest_common
+			let longest_path = s:fnamemodify_pc( inp, ':h' )
+			if isdirectory( longest_path )
+				let longest_path = substitute( longest_path, '/*$', '/', '' )
+			endif
+			let longest_path .= longest_common
 		endif
+
+
+
 
 
 		" ------------------------------------------------------------
 		"
 		"  Trap special cases:
 		"
-		if inp =~ '\.\.$'
+		if s:inputting_ex
+			if inp_char == ' '
+				let inp = s:fnamemodify_pc( inp, ':h' )
+				if isdirectory( inp )
+					let inp = substitute( inp, '/*$', '/', '' )
+				endif
+				let s:inputting_ex = 0
+			else
+				let s:Cmd .= inp_char
+				let inp = inp[0:-2]
+			endif
+
+		elseif inp =~ '/:$'
+			let s:inputting_ex = 1
+			let s:Cmd = ''
+
+		elseif inp =~ '//$'
+			let g:Allow_any_input = !g:Allow_any_input
+			let inp = substitute( inp, '/*$', '/', '' )
+			continue
+
+		elseif inp =~ '/\./$'
+			" Junk case
+			let inp = substitute( inp, '\./$', '', '' )
+			call remove( inp_stack, -1 )
+			continue
+
+		elseif inp =~ '\.\.$'
 			let inp = s:fnamemodify_pc( inp, ':h' )	" remove ..
 			let inp = s:fnamemodify_pc( inp, ':h' )	" remove current dir
 			let inp .= '/'
-			let dirs = s:Get_dirs( inp )
+			let paths = s:Get_paths( inp )
 			" reset stack so backspace doesn't return to lower directory
 			let inp_stack = [ inp ]
 			continue
 
 		elseif inp =~? '/\~$'
 			let inp = substitute( $HOME, '\\', '/', 'g' ) . '/'
-			let dirs = s:Get_dirs( inp )
+			let paths = s:Get_paths( inp )
 			continue
 
-		elseif inp =~? s:Commands_patt
-			let save_inp = inp
+"		elseif s:fnamemodify_pc( inp , ':t' ) =~ '^:'
+"			if inp =~ '^:.*\S\+ $'
+"				let cmd = s:fnamemodify_pc( inp, ':t' )
+"				let cmd = substitute( cmd, '^: ', '', '' )
+"				let inp = s:fnamemodify_pc( inp, ':h' )
+"				let ret = s:Do_commands( cmd, inp )
+"				continue
+"			endif
 
-			while !isdirectory( inp ) && len( inp_stack ) > 0
+		"elseif inp =~? s:Commands_patt
+		elseif s:is_command( inp ) != ''
+			let cmd = s:fnamemodify_pc( inp, ':t' )
+
+			" Remove command aliases from the input stack:
+			while s:is_command( inp ) != '' && len( inp_stack ) > 0
 				let inp = remove( inp_stack, -1 )
 			endwhile
+			let inp = s:fnamemodify_pc( inp, ':h' )
 
-			let ret = s:Do_commands( save_inp, inp )
+			let ret = s:Do_commands( s:is_command( cmd ), inp )
+			echomsg 'ret:'.ret.',cmd:'.cmd
 
 			if ret != ''
 				let inp = ret
 			endif
 
-			let inp = substitute( inp, '/*$', '/', '' )
-			let dirs = s:Get_dirs( inp )
+			if isdirectory( inp )
+				let inp = substitute( inp, '/*$', '/', '' )
+			endif
+			let paths = s:Get_paths( inp )
 			continue
 
-		elseif longest_dir =~? s:Commands_patt
-			let inp = longest_dir
+		" Complete as a command, and re-try:
+		elseif s:is_command( longest_common ) != ''
+		"elseif longest_path =~? s:Commands_patt
+			let inp = longest_common
 			continue
+
+		elseif g:Allow_any_input
+			call s:Add_input_stack( inp_stack, inp )
+			" nada
 
 		elseif inp =~ '[.\\]$' || inp =~ '\*'
 			"
-			" Allow globs and regex to continue unmolested.
+			" Allow simple globs and regex to continue unmolested.
 			"
 			call s:Add_input_stack( inp_stack, inp )
 
-		elseif longest_common == '' 
+		elseif longest_common == ''
 		\ && inp_char != ''
 		\ && inp !~ '/$' 
 		\ && inp =~ '/'
+		\ && !g:Allow_any_input
 			" 
 			" Throw away non-matching chars, usually typed accidentally, or
 			" redundantly:
@@ -349,7 +469,7 @@ function! CD_Plus( cd_cmd )
 			" Try again with the shorter string before continuing to getchar()
 			continue
 		elseif inp != ''
-			let inp = longest_dir == '' ? inp : longest_dir
+			let inp = longest_path == '' ? inp : longest_path
 			let inp = substitute( inp, '/*$', replace_trailing, '' )
 			call s:Add_input_stack( inp_stack, inp )
 		endif
@@ -365,49 +485,64 @@ function! CD_Plus( cd_cmd )
 
 		if inp == ''
 			" All will be matched, so filter out commands.
-			let matching_aliases = filter( matching_aliases, 'g:Cd_aliases[ v:val ] !~ s:Commands_patt ' )
+			let matching_aliases = filter( matching_aliases, 'g:CD_aliases[ v:val ] !~ ":$" ' )
 		endif
 
-		if s:tab_dir_list_idx > -1
-			let show_dirs = deepcopy( s:tab_dir_list )
+		if s:tab_path_list_idx > -1
+			let show_paths = deepcopy( s:tab_path_list )
 		else
-			let show_dirs = deepcopy( matching_dirs )
+			let show_paths = deepcopy( matching_paths )
 		endif
 
-		let show_dirs = map(  show_dirs, 's:fnamemodify_pc( v:val, ":t" ) . "/" ' )
+		let show_paths = map(  show_paths, 
+					\   ' s:fnamemodify_pc( v:val, ":t" ) '
+					\ . ' . '
+					\ . '( isdirectory( v:val ) '
+					\ . ' ? "/" : "" ) ' )
 
-		if match( longest_dir, '/$' ) > -1
+		if match( longest_path, '/$' ) > -1
 			" Clear aliases when ending in /, since all will be matched.
 			let matching_aliases = []
 		endif
 
 
-		silent %d _
 
-		let show_dirs = s:Format_dirs( show_dirs )
-		let show_aliases = s:Format_aliases( matching_aliases )
-		for str in show_dirs
-			call append("$", str)
-		endfor
-		for str in show_aliases
-			call append("$", str)
-		endfor
-		1d _
-		2match diffchange /^\s*\zs.*\ze >>/
+		if s:CD_history_idx > -1
+			exe "resize " . min( [ &lines / 3, len( s:CD_history ) ] )
+		else
+			silent %d _
+			let show_paths = s:Format_paths( show_paths )
+			let show_aliases = s:Format_aliases( matching_aliases )
+			for str in show_paths
+				call append("$", str)
+			endfor
+			for str in show_aliases
+				call append("$", str)
+			endfor
+			1d _
+			2match diffchange /^\s*\zs.*\ze >>/
 
-		let lines = len( show_dirs + show_aliases )
-		if ( lines ) > s:cd_winheight
-			let s:cd_winheight = lines 
-			exe "resize " . s:cd_winheight
-		elseif ( lines ) < s:cd_winheight 
+			let lines = len( show_paths + show_aliases )
+			if lines > s:cd_winheight
+				let s:cd_winheight = lines 
+				exe "resize " . s:cd_winheight
+			elseif lines < s:cd_winheight 
+				if s:cd_winheight > ( &lines / 3 )
+							\ && lines < ( &lines / 3 )
+					let s:cd_winheight = ( &lines / 3 )
+					exe "resize " . s:cd_winheight
+				endif
+			endif
+
 		endif
 
 		redraw
 
+		let prompt = ( g:Allow_any_input ? "+" : "" ) . ":" . s:Cmd . " "
 		echon prompt 
-		if isdirectory( longest_dir ) && longest_alias == ''
-		elseif has_key( g:Cd_aliases, longest_common ) 
-		\&& longest_dir == g:Cd_aliases[ longest_alias ] 
+		if isdirectory( longest_path ) && longest_alias == ''
+		elseif has_key( g:CD_aliases, longest_common ) 
+		\&& longest_path == g:CD_aliases[ longest_alias ] 
 			echohl DiffChange
 			echon longest_common . '>>'
 			echohl NONE
@@ -432,181 +567,383 @@ function! CD_Plus( cd_cmd )
 				elseif isdirectory( 'C:/' )
 					let inp = 'C:/'
 				endif
-				let dirs = s:Get_dirs( inp )
+				let paths = s:Get_paths( inp )
 				continue
 			else
 			endif
 		endif
 
-		if	inp_char =~ "\\(\<esc>\\|\<c-c>\\)" 
+		if	inp_char =~# "\\(\<esc>\\|\<c-c>\\)" 
 			normal :
 			break
-		elseif	inp_char =~ "\\(\<c-w>\\|\<c-h>\\|\<bs>\\)" 
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\\(\<c-w>\\|\<c-h>\\|\<bs>\\)" 
 			if len( inp_stack ) > 1 && inp_char !~ "\<c-w>"
 				call remove( inp_stack, -1 )
 				let inp = remove( inp_stack, -1 )
-				let dirs = s:Get_dirs( inp )
+				let paths = s:Get_paths( inp )
 			elseif strlen( inp ) > 0
 				let inp = s:fnamemodify_pc( inp, ':h' )
-				let dirs = s:Get_dirs( inp )
+				let paths = s:Get_paths( inp )
 				let inp_stack = []
 			else
 				let inp = ''
 				let inp_stack = []
 			endif
 
-		elseif	inp_char =~ "\<c-l>"
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\<c-l>"
 			redraw
-
-		elseif	inp_char =~ "\<c-u>"
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\<c-u>"
 			let inp = ''
 
-		elseif	inp_char =~ "\<c-p>"
-			let s:Cd_history_idx -= 1
-			if s:Cd_history_idx < 0
-				let s:Cd_history_idx = len( g:Cd_history ) - 1
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\<c-n>"
+			if s:CD_history_idx == -1
+				if s:Cmd =~? 'cd'
+					let s:CD_history = g:CD_dir_history 
+				else
+					let s:CD_history = g:CD_path_history 
+				endif
+				call s:Fill_history( s:CD_history )
+				silent $-1
 			endif
-			let inp = g:Cd_history[ s:Cd_history_idx ]
-
-		elseif	inp_char =~ "\<c-n>"
-			let s:Cd_history_idx += 1
-			if s:Cd_history_idx >= len( g:Cd_history )
-				let s:Cd_history_idx = 0
+			let s:CD_history_idx -= 1
+			if s:CD_history_idx < 0
+				let s:CD_history_idx = len( s:CD_history ) - 1
 			endif
-			let inp = g:Cd_history[ s:Cd_history_idx ]
+			let inp = s:CD_history[ s:CD_history_idx ]
 
-		elseif	inp_char == "/" && inp !~ '^\a:/$'
+			silent! exe '/' . escape( inp, ' [].-~/\\' ) . '$'
+
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\<c-p>"
+			if s:CD_history_idx == -1
+				if s:Cmd =~? 'cd'
+					let s:CD_history = g:CD_dir_history 
+				else
+					let s:CD_history = g:CD_path_history 
+				endif
+				call s:Fill_history( s:CD_history )
+				silent 0
+			endif
+			let s:CD_history_idx += 1
+			if s:CD_history_idx >= len( s:CD_history )
+				let s:CD_history_idx = 0
+			endif
+			let inp = s:CD_history[ s:CD_history_idx ]
+
+			silent! exe '?' . escape( inp, ' [].-~/\\' ) . '$'
+
+		" ------------------------------------------------------------
+		"elseif	inp_char == "/" && inp !~ '^\a:/$' && inp !~ '/$'
+		elseif	inp_char == "/" && inp !~ '/$'
+			" Don't match trailing / so it can be used as a toggle for
+			" g:Allow_any_input
 
 			let inp = substitute( inp, '/*$', '', '' )
 
 			" Expand any globs:
 			"
-			let dirs1 = s:Get_dirs( inp )
-			if len( dirs1 ) > 0
-				let inp = dirs1[0]
+			let paths1 = s:Get_paths( inp )
+			if len( paths1 ) > 0
+				" Set inp to the first match, and then find matches
+				" under that.
+				let inp = paths1[0]
 				let inp .= '/'
-				let dirs = s:Get_dirs( inp )
+				let paths = s:Get_paths( inp )
 			endif
 
-		elseif	inp_char =~ "\<tab>" 
-			if s:tab_dir_list_idx == -1
-				let s:tab_dir_list_idx = 0
-				if len( matching_dirs ) < 1
+			if len( paths ) < 1 && !isdirectory( inp ) && !filereadable( inp )
+				let tail = s:fnamemodify_pc( inp, ':t' )
+				if has_key( g:CD_aliases, tail )
+					let inp = g:CD_aliases[ tail ]
+					if isdirectory( inp )
+						let inp .= '/'
+					endif
+					continue
+				elseif input("Create directory? ") =~? '^y'
+					call mkdir( inp, "p" )
+				endif
+			endif
+
+
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\\(\<tab>\\|\<S-Tab>\\)" 
+			if s:tab_path_list_idx == -1
+				let s:tab_path_list_idx = 0
+				if len( matching_paths ) < 1
 					let inp = substitute( inp, '/*$', '/', '' )
-					let dirs = s:Get_dirs( inp )
-					if len( dirs ) > 0
-						let matching_dirs = dirs
+					let paths = s:Get_paths( inp )
+					if len( paths ) > 0
+						let matching_paths = paths
 					else
 					endif
 				endif
-				let s:tab_dir_list = matching_dirs " + matching_aliases
+				let s:tab_path_list = matching_paths " + matching_aliases
 
-				let s:tab_dir_list = filter( matching_dirs, 'v:val !~ ''\.\+$'' ' )
-			elseif s:tab_dir_list_idx >= len( s:tab_dir_list )
-				let s:tab_dir_list_idx = 0
-			endif
-			if len( s:tab_dir_list ) > 0
-				let inp = s:tab_dir_list[ s:tab_dir_list_idx ]
-				let s:tab_dir_list_idx += 1
-			endif
-			exe 'match wildmenu ;' . escape( s:fnamemodify_pc( inp, ':t' ), ' [].-' ) . '\ze/;'
+				let s:tab_path_list = filter( matching_paths, 'v:val !~ ''\.\+$'' ' )
 
-		elseif	inp_char =~ "\\(\<cr>\\|\<nl>\\)" 
+			elseif len( s:tab_path_list ) > 0
+
+				if	inp_char =~# "\<tab>"
+					let s:tab_path_list_idx = s:tab_path_list_idx == len( s:tab_path_list ) - 1
+								\ ? 0 : s:tab_path_list_idx + 1
+				else
+					let s:tab_path_list_idx = s:tab_path_list_idx == 0 
+								\ ? len( s:tab_path_list ) - 1 : s:tab_path_list_idx - 1
+				endif
+
+			endif
+
+			let inp = s:tab_path_list[ s:tab_path_list_idx ]
+
+			let s = inp
+			let s = s:fnamemodify_pc( s, ':t' )
+			if len( s:tab_path_list ) < 8 || strlen( s ) <= g:CD_Plus_name_wrap_len
+				let s1 = escape( s, ' [].-~' )
+				let s2 = 'not_a_match'
+			else
+				let s1 = strpart( s, 0, ( g:CD_Plus_name_wrap_len - 2 ) )
+				let s2 = strpart( s, ( g:CD_Plus_name_wrap_len - 2 ) )
+				let s1 = escape( s1, ' [].-~' )
+				let s2 = escape( s2, ' [].-~' )
+				let s2 = s2 == '' ? 'not_a_match' : '>' . s2
+			endif
+
+			let s3 = escape( s, ' [].-~' )
+			let s2 = 'not_a_match'
+
+			"let do = 'match wildmenu ;\(^\|\s\)\%[' . s . ']\ze\([>/ ]\|$\);'
+
+			let do = 'match wildmenu ;\v<%[' . s3 . ']\ze([>/ ]|$);'
+			exe do
+			"echomsg do
+
+			"exe 'match wildmenu ;\(\%[' . s3 . ']\{1,}\)\ze\([>/ ]\|$\);'
+			"exe 'match wildmenu ;\(\%[' . s3 . ']\|' . s2 . '\)\ze\([>/ ]\|$\);'
+
+			" End: tab handling
+			"
+
+
+		" ------------------------------------------------------------
+		elseif	inp_char =~# "\\(\<cr>\\|\<nl>\\)" 
 			if inp == ''
 				let inp = $HOME
 			endif
-			if !isdirectory( inp )
-				echomsg inp . " is not a directory."
-				break
+			if !isdirectory( inp ) && !filereadable( inp )
+				if s:Cmd =~ 'cd'
+					let dir = inp
+				else
+					let dir = s:fnamemodify_pc( inp, ':h' )
+				endif
+				if input("Create directory? ") =~? '^y'
+					call mkdir( dir, "p" )
+					if !isdirectory( dir )
+						echomsg inp . " is not a directory."
+					else
+						call CD_Plus_add_history( inp )
+					endif
+				endif
+			else
+				call CD_Plus_add_history( inp )
 			endif
 
-			while index( g:Cd_history, inp ) > -1
-				call remove( g:Cd_history, index( g:Cd_history, inp ) )
-			endwhile
-			call add( g:Cd_history, inp )
-			while len( g:Cd_history ) > g:Cd_history_max
-				call remove( g:Cd_history, 0 )
-			endwhile
 			call s:Save_cfg()
 
 			break
 
+		" ------------------------------------------------------------
 		else 
 			let inp .= inp_char
 			let inp = substitute( inp, '^\s*', '', '' )
-			let dirs = s:Get_dirs( inp )
+			let paths = s:Get_paths( inp )
+		endif
 
+		if	inp_char !~# "\\(\<tab>\\|\<S-Tab>\\)" && s:tab_path_list_idx != -1
+			let s:tab_path_list_idx = -1
+			match
+		endif
+
+		if	inp_char !~# "\\(\<c-n>\\|\<c-p>\\)" && s:CD_history_idx != -1
+			let s:CD_history_idx = -1
+			match
 		endif
 
 	endwhile
+	"
+	"  End: Main processing loop
+	"
+	" ----------------------------------------------------------------------
 
 
-	let g:Cd_aliases[ '-' ] = old_cwd
+	let g:CD_aliases[ '-' ] = old_cwd
 
 	let bufnr = bufnr("__CD__")
 	let winnr = bufwinnr( bufnr )
 	if winnr > 0
 		exe winnr . " wincmd w"
-		if inp_char != "\<ESC>"
+		"let &cmdheight = s:save_cmdheight
+		if inp_char == "\<ESC>"
+			exe "nnoremap <silent> <buffer> <esc> <esc>"
+						\ . ":call CD_Plus( '" . s:Cmd . "' , '" . inp . "') <CR>"
+			exe "nnoremap <silent> <buffer> <CR> "
+						\ . ":call CD_Plus_return_to( '" . s:Cmd . "' , '" . inp . "', 'CR' ) <CR>"
+		else
 			let &lazyredraw = s:save_lazyredraw
 			"let &isfname = s:save_isfname
 			let &cmdheight = s:save_cmdheight
 			silent hide
+			exe bufwinnr( start_bufnr ) . " wincmd w"
+		endif
+	else
+		exe bufwinnr( start_bufnr ) . " wincmd w"
+	endif
+
+
+	if	inp_char =~ "\\(\<cr>\\|\<nl>\\)" 
+		let do = s:Cmd . " " . inp
+		exe s:Cmd . " " . inp
+		"call feedkeys( ":" . s:Cmd . " " . inp . "\<CR>" , "n" )
+		redraw
+		call histadd( "cmd", do )
+		echo do
+	endif
+
+endfunction
+" End:  function! CD_Plus( cmd, path )
+
+
+function! CD_Plus_return_to( cmd, path, key )
+
+	let path = a:path
+	let contents = getline( "." )
+	let col = col(".")
+
+	"let word = matchstr( contents, '\<\S*\%' . ( col ) . 'c\S*\>' )
+	"let word1 = matchstr( contents, '\S*\%#\S*' )
+	let word = matchstr( contents, '\S*\%' . ( col ) . 'c\S*' )
+
+	if a:key =~ "\\v(\<CR>|CR)"
+		if s:CD_history_idx == -1
+			let path = substitute( path, '/*$', '/', '' )
+			let path .= word
 		else
+			let path = word
 		endif
 	endif
 
-	exe bufwinnr( start_bufnr ) . " wincmd w"
-
-	if	inp_char =~ "\\(\<cr>\\|\<nl>\\)" 
-		exe a:cd_cmd . " " . inp
-		redraw
-		echo a:cd_cmd . " " . inp
+	if s:CD_history_idx != -1
+		let sv = @/
+		silent %s/^\d*\s*//
+		let @/ = sv
+		let hist = reverse( getline(1,"$") )
+		if s:Cmd =~? 'cd'
+			let g:CD_dir_history = hist
+		else
+			let g:CD_path_history = hist
+		endif
 	endif
+
+	if !isdirectory( path ) && !filereadable( path )
+		let g:Allow_any_input = 1
+	endif
+	call CD_Plus( a:cmd, path )
 
 endfunction
 
 
 
 
-function! s:Do_history()
+aug CD_auto
+	au!
+	au BufWinEnter * call CD_Plus_add_history( s:fnamemodify_pc( expand("%"), ':p' ) )
+	au BufHidden __CD__ let &cmdheight = s:save_cmdheight
+aug END
 
-	let winnr = bufwinnr( bufnr("__CD_HISTORY__") )
-	if winnr > 0
-		exe winnr . " wincmd w"
+
+
+function! CD_Plus_add_history( path )
+	if isdirectory( a:path )
+		let idx = index( g:CD_dir_history, a:path )
+		if idx > -1
+			call remove( g:CD_dir_history, idx )
+		endif
+		call extend( g:CD_dir_history, [ a:path ], 0 )
+
+		while len( g:CD_dir_history ) > g:CD_dir_history_max
+			call remove( g:CD_dir_history, -1 )
+		endwhile
 	else
-		wincmd b
-		wincmd k
-		6 split __CD_HISTORY__
+		if a:path =~ '\v(__CD__|^$)'
+			return
+		endif
+		let idx = index( g:CD_path_history, a:path )
+		while idx > -1
+			call remove( g:CD_path_history, idx )
+			let idx = index( g:CD_path_history, a:path )
+		endwhile
+		call extend( g:CD_path_history, [ a:path ], 0 )
+
+		while len( g:CD_path_history ) > g:CD_path_history_max
+			call remove( g:CD_path_history, -1 )
+		endwhile
 	endif
-	setlocal buftype=nofile
-	setlocal noswapfile
-	setlocal bufhidden=wipe
+endfunction
+
+
+
+
+function! s:Fill_history( hist )
+
+"	let winnr = bufwinnr( bufnr("__CD__") )
+"	if winnr > 0
+"		exe winnr . " wincmd w"
+"	else
+"		echomsg 'error finding window'
+"	endif
+
+"	else
+"		wincmd b
+"		wincmd k
+"		6 split __CD_HISTORY__
+"	endif
+"	setlocal buftype=nofile
+"	setlocal noswapfile
+"	setlocal bufhidden=wipe
+
 	%d _
 
-	let idx = len( g:Cd_history )
-	for dir in g:Cd_history
-		call append("$", printf( "%-3d ", idx ) . dir )
-		let idx -= 1
+	let hist = copy( a:hist )
+	let idx = 0
+	"for path in reverse( hist )
+	for path in hist
+		call append( 0, printf( "%-3d ", idx ) . path )
+		"call append( 0, path )
+		let idx += 1
 	endfor
-	exe "resize " . len( g:Cd_history )
+	exe "resize " . min( [ &lines / 3, len( hist ) ] )
 
-	$
+	$d _
 	redraw
+
+	return
 
 	try
 		let idx = input("Enter # ")
-		if idx == '' || idx < 0 || idx > len( g:Cd_history ) - 1
-			hide
+		if idx == '' || idx < 0 || idx > len( g:CD_dir_history ) - 1
+			"hide
 			return ''
 		endif
 	catch
 		" Catch ^C
 	endtry
 
-	hide
+	"hide
 
-	return g:Cd_history[ len(g:Cd_history) - idx ]
+	return g:CD_dir_history[ len(g:CD_dir_history) - idx ]
 endfunction
 
 
@@ -615,24 +952,28 @@ endfunction
 function! s:Do_commands( cmd, dir )
 
 	if a:cmd =~? '^history'
-		return s:Do_history()
+		return s:Fill_history()
 	endif
 
 	if a:cmd =~? '^set'
 		let prompt = 'set alias for ' . a:dir . ' : '
 	elseif a:cmd =~? '^delete'
 		%d _
-		let l = filter( keys(g:Cd_aliases) , 'g:Cd_aliases[ v:val ] !~ s:Commands_patt ' )
+		let l = filter( keys(g:CD_aliases) , 'g:CD_aliases[ v:val ] !~ ":$" ' )
 		call append("$",  s:Format_aliases( l ) )
 		2match diffchange /^\s*\zs.*\ze >>/
 		exe 'resize ' . len(l)
 		redraw
 		let prompt = 'delete alias for : '
+	elseif a:cmd =~? '^excmd'
+		let prompt = 'enter ex : '
 	elseif a:cmd =~? '^help'
 		call CD_Plus_help_extract_tmp_buf()
 		return a:dir
 	else
-		"echomsg "Bad command " . a:cmd
+		let s:Cmd = a:cmd
+		let s:Cmd = substitute( s:Cmd, '\s*:$', '', '' )
+		return a:dir
 	endif
 
 	let cmd = input( prompt, "" )
@@ -640,10 +981,12 @@ function! s:Do_commands( cmd, dir )
 	if cmd == '' | return a:dir | endif
 
 	if a:cmd =~? '^set'
-		let g:Cd_aliases[ cmd . ' ' ] = a:dir
+		let g:CD_aliases[ cmd . ' ' ] = a:dir
 	elseif a:cmd =~? '^delete'
-		silent! call remove( g:Cd_aliases, cmd )
-		silent! call remove( g:Cd_aliases, cmd . ' ' )
+		silent! call remove( g:CD_aliases, cmd )
+		silent! call remove( g:CD_aliases, cmd . ' ' )
+	elseif a:cmd =~? '^excmd'
+		let s:Cmd = cmd
 	endif
 
 	call s:Save_cfg()
@@ -655,7 +998,7 @@ endfunction
 function! s:Add_input_stack( inp_stack, inp )
 
 	" Don't add to stack when tabbing is active:
-	if s:tab_dir_list_idx > -1 | return | endif
+	if s:tab_path_list_idx > -1 | return | endif
 
 	if len(a:inp_stack) > 0 && a:inp == a:inp_stack[-1]
 		" Don't add duplicates
@@ -667,47 +1010,56 @@ endfunction
 
 
 
-function! s:Format_dirs( dirs )
-	if len( a:dirs ) < 1 | return [] | endif
-	let dir_lens = deepcopy( a:dirs )
-	call map( dir_lens, 'strlen(v:val)' )
-	let longest = max( dir_lens )
-	let longest = min( [longest, 19] )		" 19+1 space divides evenly usually
-	let fmt  = "%-" . longest . "." . longest . "s "
-	let fmt1 = "%" . longest . "." . longest . "s "
-	let fmt1 = fmt	" fmt1 not used right now
-	let out_dirs = []
+function! s:Format_paths( paths )
+	if len( a:paths ) < 1 | return [] | endif
+	let path_lens = deepcopy( a:paths )
+	call map( path_lens, 'strlen(v:val)' )
+	let longest_path = max( path_lens )
+	let longest = min( [longest_path, g:CD_Plus_name_wrap_len ] )		" 19+1 space divides evenly usually
+
+"	let total = strlen( join( a:paths, ' ' ) )
+"	if total < winwidth( winnr() )
+"		let longest = longest_path
+"	endif
+	if len( a:paths ) < 8
+		let longest = longest_path
+	endif
+
+	let fmt_norm  = "%-" . longest . "." . longest . "s "
+	let fmt_indent = "  %-" . longest . "." . longest . "s "
+
+	let out_paths = []
 
 	" First, wrap file names which are too long:
 	"
-	for dir in deepcopy( a:dirs )
+	for path in deepcopy( a:paths )
 		let part = ''
-		while strlen( dir ) > longest
-			let part = strpart( dir, 0, longest - 1 )
-			let out_dirs += [ printf( fmt1, part ) ]
-			let dir = strpart( dir, longest - 1 )
+		let fmt = fmt_norm
+		while strlen( path ) > longest 
+			let part = strpart( path, 0, longest - 1 - 1 ) . '>'
+			let path = ' >' . strpart( path, longest - 1 - 1 )
+			let out_paths += [ printf( fmt, part ) ]
 		endwhile
-		let fmt2 = part == '' ? fmt : fmt1
-		let out_dirs += [ printf( fmt2, dir ) ]
+		let out_paths += [ printf( fmt, path ) ]
 	endfor
 
 
 	let cols = 0 + ( winwidth(winnr()) / ( longest + 1 ) ) 
-	let rows = 1 + ( len( out_dirs ) / cols ) 
+	let rows = 1 + ( len( out_paths ) / cols ) 
 
 	let out_lines = []
 
 	let idx = 0
-	while idx < len( out_dirs )
+	while idx < len( out_paths )
 		for col in range( 0, cols - 1 )
 			for row in range( 0, rows - 1 )
 				"echomsg row . ',' . col
 				while row >= len( out_lines )
 					call add( out_lines, '' )
 				endwhile
-				let out_lines[row] .= out_dirs[ idx ]
+				let out_lines[row] .= out_paths[ idx ]
 				let idx += 1
-				if idx >= len( out_dirs )
+				if idx >= len( out_paths )
 					return out_lines
 				endif
 			endfor
@@ -718,20 +1070,20 @@ function! s:Format_dirs( dirs )
 
 
 	echomsg 'eeek........ didnt finish directory list: '
-			\ . 'idx=' . idx . ',' . string( out_dirs[ idx : ] )
-	return out_dirs[ idx : ]
+			\ . 'idx=' . idx . ',' . string( out_paths[ idx : ] )
+	return out_paths[ idx : ]
 
-"	for dir in a:dirs
+"	for dir in a:paths
 "		let dir1 = printf( fmt, dir )
 "		if ( 1 + strlen( dir1 ) + strlen( out ) ) >= winwidth( winnr() )
-"			let out_dirs += [ out ]
+"			let out_paths += [ out ]
 "			let out = ''
 "		endif
 "		let out .= dir1
 "	endfor
-"	let out_dirs += [ out ]
+"	let out_paths += [ out ]
 
-"	return out_dirs
+"	return out_paths
 endfunction
 
 
@@ -749,7 +1101,7 @@ function! s:Format_aliases( aliases )
 	let col = 1
 	let lines = 0
 	for alias in a:aliases
-		let alias1 = printf( fmt, alias ) . '>>' . g:Cd_aliases[ alias ]
+		let alias1 = printf( fmt, alias ) . '>>' . g:CD_aliases[ alias ]
 		let out_aliases += [ alias1 ]
 		let lines += 1
 	endfor
@@ -760,42 +1112,40 @@ endfunction
 
 
 
-function! s:Get_dirs( in_dir )
+function! s:Get_paths( in_path )
 
-	let s:tab_dir_list_idx = -1
-	match NONE
-	let in_dir = a:in_dir
-	let dirs = []
+	let in_path = a:in_path
+	let paths = []
 
-	let in_dir = in_dir =~ '\*$' ? in_dir : in_dir . '*'
+	let in_path = in_path =~ '\*$' ? in_path : in_path . '*'
 
-	let globs = glob( in_dir )
-	if in_dir =~ '/\*$'
+	let globs = glob( in_path )
+	if in_path =~ '/\*$'
 
 		" get directories normally hidden with a "."
 		"
-		let globs .= "\n" . glob( substitute( in_dir, '/\*$', '/.*', '' ) )
+		let globs .= "\n" . glob( substitute( in_path, '/\*$', '/.*', '' ) )
 	endif
 
 	for file in split( globs, "\n" )
-		if isdirectory( file )
-			let dirs += [ file ]
+		if isdirectory( file ) || s:Cmd !~? 'cd'
+			let paths += [ file ]
 		endif
 	endfor
 
-	return sort( dirs )
+	return sort( paths )
 
 
 	"	Uniq -- not needed?
 	"
-"	let dirs2 = []
-"	for i in range( 1, len(dirs) - 1 )
-"		if dirs[i] != dirs[i-1]
-"			call add( dirs2, dirs[i] )
+"	let paths2 = []
+"	for i in range( 1, len(paths) - 1 )
+"		if paths[i] != paths[i-1]
+"			call add( paths2, paths[i] )
 "		endif
 "	endfor
 
-"	return sort( dirs2 )
+"	return sort( paths2 )
 
 endfunction
 
@@ -803,8 +1153,8 @@ endfunction
 
 
 
-function! s:Get_matching_dirs( dirs, look )
-	let dirs1 = []
+function! s:Get_matching_paths( paths, look )
+	let paths1 = []
 	let look = a:look
 
 	" escape dots if they aren't part of a .*
@@ -817,24 +1167,24 @@ function! s:Get_matching_dirs( dirs, look )
 
 	let look = escape( look, ' ' )
 
-	for dir in a:dirs
+	for path in a:paths
 		try
-			if dir =~? '^' . look 
-				let dir = substitute( dir, '/*$', '', '' )
-				let dirs1 += [ dir ]
+			if path =~? '^' . look 
+				let path = substitute( path, '/*$', '', '' )
+				let paths1 += [ path ]
 			endif
 		catch
 			" Throw away regex errors
 		endtry
 	endfor
-	return dirs1
+	return paths1
 endfunction
 
 
 
 function! s:Get_matching_aliases( look )
 	let out_list = []
-	for alias in sort( keys( g:Cd_aliases ) )
+	for alias in sort( keys( g:CD_aliases ) )
 		try
 			if alias =~? '^' . a:look
 				let out_list += [ alias ]
@@ -849,8 +1199,8 @@ endfunction
 
 
 
-function! s:Get_longest_common_dir( dirs )
-	return s:Get_longest_common_prefix( a:dirs )
+function! s:Get_longest_common_path( paths )
+	return s:Get_longest_common_prefix( a:paths )
 endfunction
 
 
@@ -891,15 +1241,21 @@ function! s:Save_cfg()
 		setlocal bufhidden=wipe
 		%d _
 
-		call append("$", 'call extend( g:Cd_aliases, { ' )
-		for key in keys( g:Cd_aliases ) 
-			call append("$", "\\ '" . key . "' : '" . g:Cd_aliases[key] .  "'," )
+		call append("$", 'call extend( g:CD_aliases, { ' )
+		for key in keys( g:CD_aliases ) 
+			call append("$", "\\ '" . key . "' : '" . g:CD_aliases[key] .  "'," )
 		endfor
 		call append("$", "\\ } ) " )
 
-		call append("$", 'let g:Cd_history = [' )
-		for dir in g:Cd_history 
+		call append("$", 'let g:CD_dir_history = [' )
+		for dir in g:CD_dir_history 
 			call append("$", "\\ '" . dir . "'," )
+		endfor
+		call append("$", "\\ ]" )
+
+		call append("$", 'let g:CD_path_history = [' )
+		for path in g:CD_path_history 
+			call append("$", "\\ '" . path . "'," )
 		endfor
 		call append("$", "\\ ]" )
 
@@ -920,8 +1276,12 @@ function! s:fnamemodify_pc( fname, flags )
 
 	" The default tail option doesn't handle C:/somedir
 	"
-	if a:flags =~ ':t' && match( a:fname, '/[^/]\+$' ) > -1
-		return matchstr( a:fname, '[^/]\+$' )
+	if a:flags =~ ':t' 
+		if match( a:fname, '/[^/]\+$' ) > -1
+			return matchstr( a:fname, '[^/]\+$' )
+		elseif a:fname !~ '/'
+			return a:fname
+		endif
 	endif
 
 	let pc_drive = matchstr( a:fname, '^\a:' )
@@ -937,14 +1297,11 @@ endfunction
 
 function! CD_Plus_help_extract_tmp_buf()
 
-	" Grrrr!  No local mode for these:
-	"let s:restore_foldopen = &foldopen
-	"let s:restore_foldclose = &foldclose
-
 	" Use new then edit, as a simple way to deal with an existing hidden 
 	" help buffer.
 	wincmd t
 	silent new 20
+	silent setlocal hidden=wipe
 	silent edit! _WinWalker Help_
 	silent setlocal modifiable
 	silent setlocal noreadonly
@@ -977,9 +1334,10 @@ endfunction
 silent! cunmap cd
 
 function! CD_Plus_start( cd_cmd )
-   return ":call CD_Plus('" . a:cd_cmd . "')\<cr>"
+   return ":call CD_Plus('" . a:cd_cmd . "', '')\<cr>"
 endfunction
 
+cnoremap <expr> e<space> ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('e') : 'e' )
 cnoremap <expr> cd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('cd') : 'cd' )
 cnoremap <expr> lcd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('lcd') : 'lcd' )
 
