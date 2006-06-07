@@ -8,7 +8,7 @@
 "                             ^^^^^^^^^^^^^^^^^^^^^^^
 "                             Comments, bugs, feedback welcome.
 " Created:		May, 2006
-" Updated:		Sun Jun 04, 06/04/2006 9:32:12 PM
+" Updated:		Wed Jun 07, 06/07/2006 6:37:20 PM
 " Requirements:	Vim 7
 "
 " Version:		1.0		Mon May 22, 05/22/2006 10:30:52 AM
@@ -30,6 +30,18 @@
 " 							autochdir.
 " 						-	Added ^E ^Y passthrough for scrolling.
 " 						-	Misc fixes.
+" Version:		2.1		Wed Jun 07, 06/07/2006 6:37:20 PM
+" 						-	Misc fixes (stray error messages)
+"						-	Option to recan for pc drives
+"						-	Misc fixes for pc drive pathnames
+"							(Still some problems).
+"						-	Added sorting options
+"						-	Faster scrolling and tabbing
+"						-	Changed :excmd enter method
+"						-	Added file size and time options.
+"						-	Added match collapse listing option.
+"						-	Added highlighting toggle
+"						-	Added long listing toggle
 "
 " Start_help_section {{{
 "
@@ -43,7 +55,7 @@
 "
 " 		A directory listing is maintained in a separate window.  The clean,
 " 		scrollable/editable directory/file completion list is in a regular
-" 		VIm window.
+" 		Vim window.
 "
 " 		A history is maintained individually for directories and files
 " 		accessed.
@@ -71,6 +83,9 @@
 "
 "	<CR>		Execute a "cd" command to the currently shown directory.
 "
+"				If <CR> is typed in the display window, the name under the
+"				cursor will be copied to the command line.
+"
 "	<ESC>		Jump into the __CD__ display window.   <ESC> jumps back.
 "				<CR> selects and jumps back.  Changes made to history lists
 "				in the buffer are saved to the global history vars.
@@ -84,32 +99,57 @@
 "
 "	/			Can have special actions, see 'Navigating'
 "
+"	<C-L>		Refresh
+"
 "	<C-E>		Scroll one line
 "	<C-Y>
+"	<C-D>		Scroll page
+"	<C-B>
+"				Note : it is almost as easy to do your scrolling using
+"				<ESC> to bounce to/from the display window.
 "
 "
 "	Other Commands:
 "
 "		The built-in commands are implemented as aliases (as are pc-drive
 "		names).  You can override them, but then it's up to you to create
-"		new ones.
+"		new ones.  Enter commands after a trailing  / .
 "
-"	'set '		Set an alias to the last directory displayed.
-"
-"	'opt '		Sets options.
-"		
-"			-	Display column wrap width.
-"			-	Auto-change directory.
+"	'set '		Set an alias to the current directory displayed.
 "
 "	'delete '	Delete an alias.
 "
+"	'o pt '		Sets options.  (o<SPACE>pt is to force it to match sooner.)
+"		
+"			-	Set display column wrap width.  Set to 0 for auto-sizing to
+"				longest path name.
+"
+"			-	Auto-change directory.  (default is 'local', as in 'lcd')
+"
+"			-	Recan for pc drives, and create 'C:/' style aliases.
+"
+"			-	Match collapses (shortens) listings (default on; off means
+"				always show full directory listing).
+"
+"			-	Toggle highlighting on/off
+"
+"
+"	'sort '		Sets sorting type. (default==alpha, time, size)
+"
+"	'long'		Long listing toggle (sets wrap, fsize, etc.)
+"
 "	'help '		This listing.
 "
-"	'history '	Browse the directory history.
+"	'history '	Browse the history.  A separate history is accessed
+"				depending on whether the current command is 'cd' or 'lcd',
+"				or some other file oriented command like 'e' or 'new'.
 "
-"	'edit '		Switch to edit mode.
+"	'edit '		Switch to 'open/edit' file mode.
+"	'new '		
 "
-"	':'			Input other command.  <SPACE> finishes.
+"	': '		Input other ex command.  I.e.  :vimgrep aug<CR>
+"				will prepend as ':vimgrep aug /someroot/somefiles*'
+"
 "
 "			Most of these can be abbreviated as first-char<space>  .
 "
@@ -122,7 +162,8 @@
 "
 "		Every character typed will be treated as part of a directory or alias,
 "		and the display will change accordingly.  Unmatched characters will
-"		generally be discarded.
+"		generally be discarded.  This takes a little getting used to, since
+"		you might tend to type ahead more than will match (see also // below ).
 "
 "		The  /  character is somewhat special.  If you add a slash after a
 "		directory name, it moves the display to that directory, and sets the
@@ -155,16 +196,41 @@
 "	Customizing:
 "
 "		The default key mapping is:
+"
+"			cnoremap <silent> <expr> e<space> ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('e') : 'e' )
 "			cnoremap <expr> cd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('cd') : 'cd' )
 "			cnoremap <expr> lcd ( getcmdpos() == 1 && getcmdtype() == ':' ? CD_Plus_start('lcd') : 'lcd' )
 "		
 "		a simpler keymap might be:
 "			nnoremap <leader>cd :call CD_Plus('cd')<CR>
 "
-"		let g:CD_dir_history_max = 100
-"		let g:CD_scan_pc_drives = 0
-"		let s:RC_file = $HOME . '/.vim_cd_plus'
-"		let g:CD_autochdir = 'local'		" 'off', 'local' or 'global'
+"		There is a list of globals,  following the script header, which you
+"		can change.  There are a few more, but these are the simple ones,
+"		which can also be set via option aliases.
+"
+"			g:CD_rc_file 				default: $HOME . '/.vim_cd_plus'
+"									Most globals and history are saved
+"									here.
+"
+"			g:CD_autochdir			'off', 'local', or 'global'
+"
+"			g:CD_dsp_wrap_len		default 19, specifies display column
+"									wrapping.
+"
+"			g:CD_any_input			0 or 1, the starting value for literal
+"									input (also set by trailing // toggle).
+"
+"			g:CD_scan_pc_drives		0 or 1, whether to attempt to discover
+"									pc drive names (like C:, D:, etc.) and
+"									create aliases for them.
+"
+"		If you want to customize the highlighting or sorting, it's a little
+"		more complicated.  For highlighting, there is an 'init' function
+"		that needs to be changed.  For sorting, an entry must be added to
+"		the g:CD_aliases dict var (see top of script), and a new function
+"		must be defined to do the sorting.  See the Sort_by_ftime() or
+"		Sort_by_extension() functions for examples.
+"
 "
 "
 "	Caveats:
@@ -172,8 +238,16 @@
 " 	-	Works only with 'shellslash' on.
 " 	-	Restoring the command line height is a true pain in the ass.  It
 " 		works most of the time, though that is little consolation.
+"	-	Tabbing is a little slow on large directory lists because of the
+"		redraw requirement.  It isn't much a problem, though since it's only
+"		noticable when you hold the tab key down.
 "
 " End_help_section }}}
+"
+" To Do:
+"
+" 	-	Better handling of user supplied globs and regex's.  I.e. backslash
+" 		is problematic.
 "
 "}}}
 
@@ -186,40 +260,83 @@ if v:version < 700
 endif
 
 
+" User settable globals:
+"
+if !exists('g:CD_rc_file')			| let g:CD_rc_file = $HOME . '/.vim_cd_plus' | endif
+if !exists('g:CD_scan_pc_drives')	| let g:CD_scan_pc_drives = 1		| endif
+if !exists('g:CD_dsp_wrap_len')		| let g:CD_dsp_wrap_len = 19		| endif
+if !exists('g:CD_any_input')		| let g:CD_any_input = 0			| endif
+if !exists('g:CD_autochdir')		| let g:CD_autochdir = 'local'		| endif
+if !exists('g:CD_match_collapse')	| let g:CD_match_collapse = 1		| endif
+if !exists('g:CD_do_highlighting')	| let g:CD_do_highlighting = 1		| endif
+
+
+" Other globals, which tend to be set internally, but can be modified with
+" care:
 if !exists('g:CD_aliases')			| let g:CD_aliases = {} 			| endif
-if !exists('g:CD_scan_pc_drives')	| let g:CD_scan_pc_drives = 0		| endif
 if !exists('g:CD_path_history')		| let g:CD_path_history = []		| endif
 if !exists('g:CD_path_history_max')	| let g:CD_path_history_max = 100	| endif
 if !exists('g:CD_dir_history')		| let g:CD_dir_history = []			| endif
 if !exists('g:CD_dir_history_max')	| let g:CD_dir_history_max = 100	| endif
-if !exists('g:CD_dsp_wrap_len')		| let g:CD_dsp_wrap_len = 19		| endif
-if !exists('g:CD_any_input')		| let g:CD_any_input = 0			| endif
-if !exists('g:CD_autochdir')		| let g:CD_autochdir = 'local'		| endif
-let s:CD_history_idx = -1
+if !exists('g:CD_sort_func')		| let g:CD_sort_func = 'default'	| endif
 let g:CD_glob_cache = {}
 
 
 
-" Customize this function here, or copy it to the vimrc:
-function! s:Init_highlight()
-	hi! star term=standout ctermfg=12 guifg=Red
-	hi! slash term=standout ctermfg=10 gui=bold guifg=Green
-	hi! junk ctermfg=8 guifg=grey60
-	hi! continue term=bold cterm=bold ctermfg=6 guifg=#00a0ff
-	hi! link matched WildMenu
-	hi! recent ctermfg=lightred guifg=lightred
-	hi! clear ext 
-	hi! ext ctermfg=8 guifg=darkyellow
+" You can customize the highlighting by editing CD_Plus_init_highlight()
+" and CD_Plus_hl_set()here, or copy to your vimrc:
+"
+function! CD_Plus_init_highlight()
+
+	syn clear
+
+	if !g:CD_do_highlighting | return | endif
+
+	hi! star			term=standout ctermfg=12 guifg=Red
+	hi! slash			term=standout ctermfg=10 gui=bold guifg=Green
+	hi! junk			ctermfg=8 guifg=grey60
+	hi! continue		gui=bold term=bold cterm=bold ctermfg=6 guifg=#00a0ff
+	hi! link dir		Directory
+	hi! link matched	WildMenu
+	hi! in_history		ctermfg=lightred guifg=lightred
+	hi! ext				ctermfg=8 guifg=darkyellow
 
 	"hi! clear Normal
 	"hi! Normal ctermfg=6 guifg=lightgreen
 
-	syn clear
 	syntax match star /\*/
-	syntax match slash /\//
+	syntax match slash ;\v/\ze( |$);
 	syntax match continue />/
 	syntax match ext ;\v[^.]\zs\.[^ .><]+\ze([ /*]|$);
 endfunction
+
+
+function! CD_Plus_hl_set( paths )
+	syn clear
+
+	if !g:CD_do_highlighting | return | endif
+
+	call CD_Plus_init_highlight()
+	" Individual syntax highlighting
+	"
+	for path in a:paths
+		let cmd  = ''
+		let tail = s:fnamemodify_pc( path, ':t' )
+		let hist_idx = index( g:CD_path_history, path ) 
+		if s:isdirectory_cached( path )
+			let cmd = s:hl_syntax( tail . '/', 'dir' )
+		elseif path =~ '\v[-~]$'
+			let cmd = s:hl_syntax( tail, 'junk' )
+		elseif path =~ '\v\.sw\a$'
+			let cmd = s:hl_syntax( tail, 'junk' )
+		elseif hist_idx > -1 && hist_idx < 10
+			let cmd = s:hl_syntax( tail, 'in_history' )
+		endif
+
+		exe cmd
+	endfor
+endfunction
+
 
 
 
@@ -232,11 +349,20 @@ call extend( g:CD_aliases, {
 				\ , 'new '		: 'new :'
 				\ , 'help '		: 'help :'
 				\ , 'history '	: 'history :'
-				\ ,	'opt 1 column width ( %{g:CD_dsp_wrap_len} )' : 'wrap :'
-				\ ,	'opt 2 auto change directory ( %{g:CD_autochdir} )' : 'autochdir :'
+				\ , ': '		: 'excmd :'
+				\ , 'long listing'		: 'long :' 
+				\ ,	'o pt 1 column width ( %{g:CD_dsp_wrap_len} )' : 'wrap :'
+				\ ,	'o pt 2 auto change directory ( %{g:CD_autochdir} )' : 'autochdir :'
+				\ ,	'o pt 3 scan for new PC drives ' : 'pc_drive_scan :'
+				\ ,	'o pt 4 toggle file size' : 'fsize :'
+				\ ,	'o pt 5 toggle file time' : 'ftime :'
+				\ ,	'o pt 6 toggle match collapse listings(%{g:CD_match_collapse})' : 'match_collapse :'
+				\ ,	'o pt 7 toggle highlighting (%{g:CD_do_highlighting})' : 'do_highlighting :'
+				\ ,	'sort default (%{g:CD_sort_func})'		: 'sort default :'
+				\ ,	'sort time (%{g:CD_sort_func})'			: 'sort Sort_by_ftime :'
+				\ ,	'sort extension (%{g:CD_sort_func})'	: 'sort Sort_by_extension :'
 				\ } 
 				\ )
-				"\ , ':' : 'excmd :'
 				" Note: ':' isn't handled by s:Do_commands anymore
 
 
@@ -266,27 +392,28 @@ endif
 
 
 
-if s:OS == 'mswin' && g:CD_scan_pc_drives
-	for i in range( 0, 255 ) 
-		let a = nr2char(i)
-		if a !~# '[A-Z]' | continue | endif
-		let dir = a . ':'
-		if has_key( g:CD_aliases, dir ) | continue | endif
-		if s:isdirectory_cached( dir )
-			let g:CD_aliases[ dir ] = dir . '/'
-		endif
-	endfor
+function! s:scan_pc_drives()
+	if s:OS == 'mswin' && g:CD_scan_pc_drives
+		for i in range( 0, 255 ) 
+			let a = nr2char(i)
+			if a !~# '[A-Z]' | continue | endif
+			let dir = a . ':'
+			if has_key( g:CD_aliases, dir ) | continue | endif
+			if s:isdirectory_cached( dir )
+				let g:CD_aliases[ dir ] = dir . '/'
+			endif
+		endfor
+	endif
+endfunction
+
+
+
+if filereadable( g:CD_rc_file )
+	exe 'so ' . g:CD_rc_file
 endif
 
 
-
-let s:RC_file = $HOME . '/.vim_cd_plus'
-if filereadable( s:RC_file )
-	exe 'so ' . s:RC_file
-endif
-
-
-
+let s:CD_history_idx = -1
 
 function! CD_Plus( cmd, path )
 
@@ -294,7 +421,7 @@ function! CD_Plus( cmd, path )
 	let s:tab_path_list = []
 	let s:tab_path_list_idx = -1
 
-	let s:scrolling = -1
+	"let s:scrolling = -1
 
 	let s:CD_history_idx = -1
 
@@ -310,9 +437,7 @@ function! CD_Plus( cmd, path )
 	" into to the display window.
 	if &cmdheight > 1
 		let s:save_lazyredraw = &lazyredraw
-		"let s:save_isfname = &isfname
-		"set isfname+=:
-		let s:save_cmdheight = &cmdheight
+		let g:CD_save_cmdheight = &cmdheight
 	endif
 
 
@@ -348,6 +473,9 @@ function! CD_Plus( cmd, path )
 			let &splitbelow = sv
 			if bufnr > -1
 				silent exe 'buf ' . bufnr
+				if bufnr("%") == bufnr
+					%d _
+				endif
 			else
 				silent edit __CD__
 			endif
@@ -359,9 +487,9 @@ function! CD_Plus( cmd, path )
 			"
 			"			aug Cd_auto
 			"				au!
-			"				exe "au BufHidden <buffer> set cmdheight=" . s:save_cmdheight
+			"				exe "au BufHidden <buffer> set cmdheight=" . g:CD_save_cmdheight
 			"			aug END
-			"exe "nmap <silent> <buffer> <esc> <esc>:set cmdheight=" . s:save_cmdheight . "<CR>:cd"
+			"exe "nmap <silent> <buffer> <esc> <esc>:set cmdheight=" . g:CD_save_cmdheight . "<CR>:cd"
 		endtry
 	endif
 	silent let s:cd_winheight = 6
@@ -382,8 +510,8 @@ function! CD_Plus( cmd, path )
 		exe "resize " . s:cd_winheight
 		
 
-		if s:scrolling == -1 
-		\ && s:tab_path_list_idx == -1
+		"if s:scrolling == -1 
+		if s:tab_path_list_idx == -1
 		\ && s:CD_history_idx == -1
 			"MoreMsg
 			echohl LineNr 
@@ -392,6 +520,9 @@ function! CD_Plus( cmd, path )
 			redraw
 		endif
 
+
+		let inp = substitute( inp, '^\a:', '\=toupper(submatch(0))', '' )
+		let inp = substitute( inp, '^\a:$', '&/', '' )
 
 		if inp == ''
 			let paths = s:Get_paths( $HOME . '/' )
@@ -413,6 +544,8 @@ function! CD_Plus( cmd, path )
 
 		let matching_aliases = s:Get_matching_aliases( inp_tail )
 	
+		"echomsg 'paths=' . string( paths )
+		"echomsg 'tail='.inp_tail  . ', matching='. string( matching_paths )
 
 		let matching_path_tails = map( deepcopy( matching_paths ), 
 					\ 's:fnamemodify_pc( v:val, ":t" ) ' )
@@ -449,26 +582,31 @@ function! CD_Plus( cmd, path )
 		"
 		"  Trap special cases:
 		"
-		if s:inputting_ex
-			if inp_char == ' '
-				let inp = s:fnamemodify_pc( inp, ':h' )
-				if s:isdirectory_cached( inp )
-					let inp = substitute( inp, '/*$', '/', '' )
-				endif
-				let s:inputting_ex = 0
-			else
-				let s:Cmd .= inp_char
-				let inp = inp[0:-2]
-			endif
-
-		elseif inp =~ '/:$'
-			let s:inputting_ex = 1
-			let s:Cmd = ''
-
-		elseif inp =~ '//$'
+"		if s:inputting_ex
+"			if inp_char == ' '
+"				let inp = s:fnamemodify_pc( inp, ':h' )
+"				if s:isdirectory_cached( inp )
+"					let inp = substitute( inp, '/*$', '/', '' )
+"				endif
+"				let s:inputting_ex = 0
+"			else
+"				let s:Cmd .= inp_char
+"				let inp = inp[0:-2]
+"			endif
+"
+"		elseif inp =~ '/:$'
+"			let s:inputting_ex = 1
+"			let s:Cmd = ''
+"
+"		elseif inp =~ '//$'
+		if inp =~ '//$'
 			let g:CD_any_input = !g:CD_any_input
 			let inp = substitute( inp, '/*$', '/', '' )
 			continue
+
+		elseif inp =~ '^\a:*$'
+			echomsg 'here'
+			call s:Add_input_stack( inp_stack, inp )
 
 		elseif inp =~ '/\./$'
 			" Junk case
@@ -476,7 +614,7 @@ function! CD_Plus( cmd, path )
 			call remove( inp_stack, -1 )
 			continue
 
-		elseif inp =~ '\.\.$'
+		elseif inp =~ '/\.\.$'
 			let inp = s:fnamemodify_pc( inp, ':h' )	" remove ..
 			let inp = s:fnamemodify_pc( inp, ':h' )	" remove current dir
 			let inp .= '/'
@@ -485,8 +623,10 @@ function! CD_Plus( cmd, path )
 			let inp_stack = [ inp ]
 			continue
 
-		elseif inp =~? '/\~$'
+		elseif inp =~? '/\~$' 
+			"|| inp =~? '^\~$'
 			let inp = substitute( $HOME, '\\', '/', 'g' ) . '/'
+			"echomsg 'home ' .  inp 
 			let paths = s:Get_paths( inp )
 			continue
 
@@ -527,7 +667,7 @@ function! CD_Plus( cmd, path )
 			let inp = longest_common
 			continue
 
-		elseif inp =~ '[.\\]$' || inp =~ '\*'
+		elseif inp =~ '[.\\]$' || inp =~ '\*' || inp =~ '\*\*/$'
 			"
 			" Allow simple globs and regex to continue unmolested.
 			"
@@ -572,8 +712,21 @@ function! CD_Plus( cmd, path )
 		endif
 
 
+
 		if s:tab_path_list_idx > -1
 			let show_paths = deepcopy( s:tab_path_list )
+		elseif g:CD_match_collapse == 0
+			let dir = inp
+			"echomsg 'show_paths' . string( matching_paths)
+			"if dir =~ '[*.\\]' || dir =~ '/$'
+			if dir =~ '/$' "|| s:isdirectory_cached( dir )
+				" nada
+			else
+				let dir = s:fnamemodify_pc( dir, ':h' )
+				"let dir .= '/' 
+			endif
+			let show_paths = s:Get_paths( dir . '/' )
+			"echomsg 'dir='.dir
 		else
 			let show_paths = deepcopy( matching_paths )
 		endif
@@ -590,13 +743,13 @@ function! CD_Plus( cmd, path )
 		endif
 
 
-		if s:scrolling > -1
+		"if s:scrolling > -1
 			" nada
-		elseif s:CD_history_idx > -1
+		if s:CD_history_idx > -1
 			exe "resize " . min( [ &lines / 3, len( s:CD_history ) ] )
 		else
 			silent %d _
-			let show_paths1 = s:Format_paths( show_paths )
+			let show_paths1 = s:Format_paths( inp, show_paths )
 			let show_aliases = s:Format_aliases( matching_aliases )
 			for str in show_paths1
 				call append("$", str)
@@ -609,35 +762,26 @@ function! CD_Plus( cmd, path )
 
 			if s:tab_path_list_idx == -1
 				let inp_tail = s:fnamemodify_pc( substitute( inp, '/*$', '', '' ), ':t' )
-				if inp_tail == '' || inp_tail =~ '^\*$' || inp =~ '/$'
+				if inp_tail == '' || inp_tail =~ '^\*\**$' || inp =~ '/$'
 					match
 				else
-					exe 'match matched /\v(^|\s)\zs' . s:escape_path( inp_tail ) . '/'
+					" remove trailing backslashes until next input char
+					let inp_tail = substitute( inp_tail, '\\$', '', '' )
+					let inp_tail = substitute( inp_tail, '\[$', '', '' )
+					let inp_tail = substitute( inp_tail, '\([^. *]*\)\*\([^. *]*\)', '\1[^ ]*\2', '' )
+					let s = 'match matched /\v(^|\s)\zs' . inp_tail . '/'
+					try
+						exe s
+					catch
+					endtry
+					"echomsg s
+					"let @a = s
+					"exe 'match matched /\v(^|\s)\zs' . s:escape_path( inp_tail ) . '/'
 				endif
 			endif
 
 
-			syn clear
-			call s:Init_highlight()
-			" Individual syntax highlighting
-			"
-			let idx = 0
-			for path in show_paths
-				let cmd  = ''
-				let hist_idx = index( g:CD_path_history, matching_paths[idx] ) 
-				if s:isdirectory_cached( path )
-					let cmd = s:hl_syntax( path, 'Directory' )
-				elseif path =~ '\v[-~]$'
-					let cmd = s:hl_syntax( path, 'junk' )
-				"elseif hist_idx > -1 && hist_idx < 20
-				elseif hist_idx > -1 
-					let cmd = s:hl_syntax( path, 'recent' )
-				endif
-
-				exe cmd
-				let idx += 1
-			endfor
-
+			call CD_Plus_hl_set( matching_paths )
 
 			" Resize to fit
 			let lines = len( show_paths1 + show_aliases )
@@ -655,30 +799,41 @@ function! CD_Plus( cmd, path )
 
 		endif
 
-		redraw
-
-		let prompt = ( g:CD_any_input ? "[ANY]" : "" ) . ":" . s:Cmd . " "
-		echon prompt 
-		if s:isdirectory_cached( longest_path ) && longest_alias == ''
-		elseif has_key( g:CD_aliases, longest_common ) 
-		\&& longest_path == g:CD_aliases[ longest_alias ] 
-			echohl DiffChange
-			echon longest_common . '>>'
-			echohl NONE
-		else
-		endif
-		echon inp
-
-
-		let s:Path = inp
-
 
 		" ------------------------------------------------------------
-		"
 		"  Process a character
 		"
-		let inp_char = getchar()
-		let inp_char = nr2char( inp_char ) == '' ? inp_char : nr2char( inp_char )
+		while 1
+			redraw
+
+			let prompt = ( g:CD_any_input ? "[ANY]" : "" ) . ":" . s:Cmd . " "
+			echon prompt 
+			if s:isdirectory_cached( longest_path ) && longest_alias == ''
+			elseif has_key( g:CD_aliases, longest_common ) 
+						\&& longest_path == g:CD_aliases[ longest_alias ] 
+				echohl DiffChange
+				echon longest_common . '>>'
+				echohl NONE
+			else
+			endif
+			echon inp
+
+
+			let s:Path = inp
+
+			let inp_char = getchar()
+			let inp_char = nr2char( inp_char ) == '' ? inp_char : nr2char( inp_char )
+
+			if inp_char =~# "\\v(\<c-e>|\<c-y>|\<c-d>|\<c-b>)" 
+				exe "normal! " . inp_char
+			elseif	inp_char =~# "\\v(\<tab>|\<S-Tab>)" 
+				let inp = s:Do_tab( inp_char, inp, matching_paths )
+			else
+				break
+			endif
+
+		endwhile
+
 
 		if inp == ''
 			if inp_char == '/'
@@ -703,7 +858,8 @@ function! CD_Plus( cmd, path )
 				let inp = remove( inp_stack, -1 )
 				let paths = s:Get_paths( inp )
 			elseif strlen( inp ) > 0
-				let inp = s:fnamemodify_pc( inp, ':h' )
+				let inp = substitute( inp, '/*$', '', '' )
+				let inp = s:fnamemodify_pc( inp, ':h' ) . '/'
 				let paths = s:Get_paths( inp )
 				let inp_stack = []
 			else
@@ -713,6 +869,8 @@ function! CD_Plus( cmd, path )
 
 		" ------------------------------------------------------------
 		elseif	inp_char =~# "\<c-l>"
+			unlet! s:old_path_tails
+			let inp_char = ''
 			redraw
 
 		" ------------------------------------------------------------
@@ -769,6 +927,12 @@ function! CD_Plus( cmd, path )
 			" Don't match trailing / so it can be used as a toggle for
 			" g:CD_any_input
 
+			" Special case:  .../**/
+			if inp =~ '\*\*/*'
+				let inp .= '/'
+				continue
+			endif
+
 			let inp = substitute( inp, '/*$', '', '' )
 
 			" Expand any globs:
@@ -783,6 +947,7 @@ function! CD_Plus( cmd, path )
 			endif
 
 			if len( paths ) < 1 && !s:isdirectory_cached( inp ) && !filereadable( inp )
+						\ && inp !~ '\*'
 				let tail = s:fnamemodify_pc( inp, ':t' )
 				if has_key( g:CD_aliases, tail )
 					let inp = g:CD_aliases[ tail ]
@@ -790,7 +955,7 @@ function! CD_Plus( cmd, path )
 						let inp .= '/'
 					endif
 					continue
-				elseif input("Create directory? ") =~? '^y'
+				elseif input("Create directory (" . inp . ")? ") =~? '^y'
 					call mkdir( inp, "p" )
 				endif
 			endif
@@ -798,97 +963,19 @@ function! CD_Plus( cmd, path )
 
 		" ------------------------------------------------------------
 		elseif	inp_char =~# "\\v(\<tab>|\<S-Tab>)" 
-			if s:tab_path_list_idx == -1
-				let s:tab_path_list_idx = 0
-				if len( matching_paths ) < 1
-					let inp = substitute( inp, '/*$', '/', '' )
-					let paths = s:Get_paths( inp )
-					if len( paths ) > 0
-						let matching_paths = paths
-					else
-					endif
-				endif
-				let s:tab_path_list = matching_paths " + matching_aliases
-
-				"let s:tab_path_list = filter( matching_paths, 'v:val !~ ''\.\+$'' ' )
-
-			elseif len( s:tab_path_list ) > 0
-
-				if	inp_char =~# "\<tab>"
-					let s:tab_path_list_idx = s:tab_path_list_idx == len( s:tab_path_list ) - 1
-								\ ? 0 : s:tab_path_list_idx + 1
-				else
-					let s:tab_path_list_idx = s:tab_path_list_idx == 0 
-								\ ? len( s:tab_path_list ) - 1 : s:tab_path_list_idx - 1
-				endif
-
-			endif
-
-			let inp = s:tab_path_list[ s:tab_path_list_idx ]
-
-			let inp_tail = s:fnamemodify_pc( inp, ':t' )
-
-if 0
-			if has_key( s:highlight_table, s ) 
-			elseif has_key( s:highlight_table, s . '/' ) 
-				let s .= '/'
-			else
-				let s = ''
-			endif
-			"echomsg ' has_key( ' . s:highlight_table[s] . ',' . s . ')' 
-			"echomsg string( s:highlight_table )
-			"
-"			let recent_list = {}
-"			for h in g:CD_path_history[ 0 : 20 ]
-"				let recent_list[ s:fnamemodify_pc( h ) ] = 1
-"			endfor
-			
-			syn clear recent
-
-			if s != ''
-				let s3 = s:highlight_table[ s ]
-				"echomsg string( s:highlight_table )
-				"echomsg s3
-				let l1 = matchlist( s3, '%\(\d*\)l', 0, -1 )
-				let l2 = matchlist( s3, '%\(\d*\)c', 0, -1 )
-				"echomsg string(l1)
-				"echomsg string(l2)
-				if len( l1 ) > 1 && len( l2 ) > 1
-					echomsg  'cursor( ' . l1[1] .','. l2[1] 
-					call cursor( l1[1], l2[1] )
-				endif
-				"if has_key( recent_list, inp_tail )
-			endif
-endif
 
 
-			let regex = s:hl_regex( inp_tail )
-			if regex == ''
-				let regex = s:hl_regex( inp_tail . '/' )
-			endif
-
-			if regex != ''
-				let do = 'match matched ;' . regex . ';'
-				exe do
-			endif
 
 			" End: tab handling
 			"
 			" ------------------------------------------------------------
 
 
-		" ------------------------------------------------------------
-		elseif	inp_char =~# "\\v(\<c-y>)" 
-			exe "normal! \<c-y>"
-			let s:scrolling = 1
-			let inp_char = ''
-
-		" ------------------------------------------------------------
-		elseif	inp_char =~# "\\v(\<c-e>)" 
-			exe "normal! \<c-e>"
-			let s:scrolling = 1
-			let inp_char = ''
-
+"		" ------------------------------------------------------------
+"		elseif	inp_char =~# "\\v(\<c-y>)" 
+"			exe "normal! \<c-y>"
+"			let s:scrolling = 1
+"			let inp_char = ''
 
 		" ------------------------------------------------------------
 		elseif	inp_char =~# "\\v(\<c-f>)" 
@@ -906,12 +993,13 @@ endif
 				let inp = $HOME
 			endif
 			if !s:isdirectory_cached( inp ) && !filereadable( inp )
+			\&& inp !~ '\*'
 				if s:Cmd =~ 'cd'
 					let dir = inp
 				else
 					let dir = s:fnamemodify_pc( inp, ':h' )
 				endif
-				if input("Create directory? ") =~? '^y'
+				if input("Create directory? (" . inp . ")") =~? '^y'
 					call mkdir( dir, "p" )
 					if !s:isdirectory_cached( dir )
 						echomsg inp . " is not a directory."
@@ -950,9 +1038,9 @@ endif
 			match
 		endif
 
-		if	inp_char != '' && inp_char !~# "\\v(\<c-e>|\<c-y>)" && s:scrolling != -1
-			let s:scrolling = -1
-		endif
+		"if	inp_char != '' && inp_char !~# "\\v(\<c-e>|\<c-y>)" && s:scrolling != -1
+			"let s:scrolling = -1
+		"endif
 
 	endwhile
 	"
@@ -971,7 +1059,7 @@ endif
 	let winnr = bufwinnr( bufnr )
 	if winnr > 0
 		exe winnr . " wincmd w"
-		"let &cmdheight = s:save_cmdheight
+		"let &cmdheight = g:CD_save_cmdheight
 		if inp_char == "\<ESC>"
 			exe "nnoremap <silent> <buffer> <esc> <esc>"
 						\ . ":call CD_Plus( '" . s:Cmd . "' , '" . inp . "') <CR>"
@@ -981,8 +1069,7 @@ endif
 						\ . ":call CD_Plus_return_to( '" . s:Cmd . "' , '" . inp . "', '2-leftmouse' ) <CR>"
 		else
 			let &lazyredraw = s:save_lazyredraw
-			"let &isfname = s:save_isfname
-			let &cmdheight = s:save_cmdheight
+			let &cmdheight = g:CD_save_cmdheight
 			silent hide
 			exe bufwinnr( start_bufnr ) . " wincmd w"
 		endif
@@ -1034,18 +1121,68 @@ endfunction
 
 
 
+function! s:Do_tab( key, inp, paths )
+	let inp = a:inp
+
+	if s:tab_path_list_idx == -1
+		let s:tab_path_list_idx = 0
+		if len( a:paths ) < 1
+			return inp
+			"					let inp = substitute( inp, '/*$', '/', '' )
+			"					let a:paths = s:Get_paths( inp )
+			"					if len( a:paths ) > 0
+			"						let matching_paths = a:paths
+			"					else
+			"					endif
+		endif
+		let s:tab_path_list = a:paths
+
+	elseif len( s:tab_path_list ) > 0
+
+		if	a:key =~# "\<tab>"
+			let s:tab_path_list_idx = s:tab_path_list_idx == len( s:tab_path_list ) - 1
+						\ ? 0 : s:tab_path_list_idx + 1
+		else
+			let s:tab_path_list_idx = s:tab_path_list_idx == 0 
+						\ ? len( s:tab_path_list ) - 1 : s:tab_path_list_idx - 1
+		endif
+
+	endif
+
+	let inp = s:tab_path_list[ s:tab_path_list_idx ]
+
+	let inp_tail = s:fnamemodify_pc( inp, ':t' )
+	if s:isdirectory_cached( inp )
+		let inp_tail .= '/'
+	endif
+
+	let regex = s:hl_regex( inp_tail )
+
+	"echomsg string( s:highlight_table )
+	call cursor( s:highlight_table[ inp_tail ].chunks_coord[0].line, 0 )
+	"echomsg s:highlight_table[ inp_tail ].chunks_coord[0].line
+
+	if regex != ''
+		let do = 'match matched ;' . regex . ';'
+		exe do
+	endif
+	return inp
+endfunction
+
+
+
+
+
 aug CD_auto
 	au!
 	au BufWinEnter * call CD_Plus_add_history( s:fnamemodify_pc( expand("%"), ':p' ) )
-	au BufHidden __CD__ let &cmdheight = s:save_cmdheight
+	au BufHidden __CD__ let &cmdheight = g:CD_save_cmdheight
 	" There is no good buffer or window event when returning from the
 	" command window, so use CursorMoved:
 	au CursorMoved __CD__	if g:CD_Plus_return_to && nr2char( getchar(1) ) != 'q' 
 	au CursorMoved __CD__		call CD_Plus_return_to( s:Cmd, s:Path, "\<c-f>" ) 
 	au CursorMoved __CD__	endif
 aug END
-
-
 
 
 let g:CD_Plus_return_to = 0
@@ -1057,16 +1194,46 @@ function! CD_Plus_return_to( cmd, path, key )
 	let path = a:path
 	let contents = getline( "." )
 	let col = col(".")
+	let line = line(".")
 
 	"let word = matchstr( contents, '\<\S*\%' . ( col ) . 'c\S*\>' )
 	"let word1 = matchstr( contents, '\S*\%#\S*' )
-	let word = matchstr( contents, '\S*\%' . ( col ) . 'c\S*' )
+	"let [ num, word; junk ] = matchlist( contents, '^\s*\d\+\s\+\(.*\)' )
+	if contents =~ '^\s*\d\+\s\+\(.*\)'
+		let word = substitute( contents, '^\s*\d\+\s\+', '', '' )
+	else
+		"let word = matchstr( contents, '\S*\%' . ( col ) . 'c\S*' )
+
+		" Use the coordinates in the s:highlight_table to find the filename
+		" under the cursor, since it might be split/wrapped.
+		"
+		let word = 'error'
+		let max_col = 0
+		for path1 in sort( keys( s:highlight_table ) )
+
+			"for idx in range( 0, len( s:highlight_table[ path1 ].chunks ) - 1 )
+			for coord in s:highlight_table[ path1 ].chunks_coord
+				"if s:highlight_table[ path1 ].chunks_coord[idx].line == line
+							"\&& s:highlight_table[ path1 ].chunks_coord[idx].col <= ( col - 1 )
+				if coord.line == line && coord.col <= col
+					if coord.col > max_col
+						let max_col = coord.col
+						let word = path1
+					endif
+				endif
+			endfor
+		endfor
+
+	endif
 
 	if a:key =~ "\\v(\<c-f>)"
 		call CD_Plus( a:cmd, a:path )
 		return
 	elseif a:key =~ "\\v(\<CR>|CR|\<2-leftmouse>|2-leftmouse)"
 		if s:CD_history_idx == -1
+			if path !~ '/$'
+				let path = s:fnamemodify_pc( path, ':h' )
+			endif
 			let path = substitute( path, '/*$', '/', '' )
 			let path .= word
 		else
@@ -1075,6 +1242,9 @@ function! CD_Plus_return_to( cmd, path, key )
 	endif
 
 	if s:CD_history_idx != -1
+		"
+		" Transfer the possibly changed history list to global var:
+		"
 		let sv = @/
 		silent %s/^\d*\s*//
 		let @/ = sv
@@ -1087,9 +1257,11 @@ function! CD_Plus_return_to( cmd, path, key )
 	endif
 
 	if !s:isdirectory_cached( path ) && !filereadable( path )
+		"echomsg 'bad path ' . path
 		let g:CD_any_input = 1
 	endif
 
+	"echomsg 'returning cmd=' . a:cmd . ',path=' . path
 	call CD_Plus( a:cmd, path )
 
 endfunction
@@ -1131,6 +1303,7 @@ endfunction
 function! s:Fill_history( hist )
 
 	%d _
+	syn clear
 
 	let hist = copy( a:hist )
 	let idx = 0
@@ -1166,11 +1339,21 @@ endfunction
 function! s:Do_commands( cmd, dir )
 
 	if a:cmd =~? '^history'
-		return s:Fill_history()
+"		if s:Cmd =~? 'cd'
+"			let s:CD_history = g:CD_dir_history 
+"		else
+"			let s:CD_history = g:CD_path_history 
+"		endif
+"		call s:Fill_history( s:CD_history )
+		call feedkeys( "\<c-p>\<esc>\<c-l>", "t" )
+		return a:dir
 	endif
+
+	let cmd = ''
 
 	if a:cmd =~? '^set'
 		let prompt = 'Set alias for ' . a:dir . ' : '
+		let cmd = input( prompt, "" )
 	elseif a:cmd =~? '^delete'
 		%d _
 		let l = filter( keys(g:CD_aliases) , 'g:CD_aliases[ v:val ] !~ ":$" ' )
@@ -1179,22 +1362,79 @@ function! s:Do_commands( cmd, dir )
 		exe 'resize ' . len(l)
 		redraw
 		let prompt = 'Delete alias for : '
+		let cmd = input( prompt, "" )
 	elseif a:cmd =~? '^excmd'
 		let prompt = 'Enter ex : '
+		let cmd = input( prompt, "", "command" )
 	elseif a:cmd =~? '^help'
 		call CD_Plus_help_extract_tmp_buf()
 		return a:dir
 	elseif a:cmd =~? '^wrap'
 		let prompt = 'enter column wrap width : '
+		let cmd = input( prompt, "" )
 	elseif a:cmd =~? '^autochdir'
 		let prompt = 'Enter autochdir ( "local", "global", or "off" ) : '
+		let cmd = input( prompt, "" )
+	elseif a:cmd =~? '^pc_drive_scan'
+		let s = g:CD_scan_pc_drives
+		let g:CD_scan_pc_drives = 1
+		call s:scan_pc_drives()
+		let g:CD_scan_pc_drives = s
+		return
+	elseif a:cmd =~? '^long'
+		if !exists('s:long_listings')
+			let s:want_info_sv = s:want_info
+			let s:want_info = 'ftime,fsize'
+			let s:CD_dsp_wrap_len_sv = g:CD_dsp_wrap_len
+			let g:CD_dsp_wrap_len = 0
+			let s:long_listings = 1
+			let s:old_path_tails = []
+		else
+			unlet! s:long_listings
+			let s:want_info = s:want_info_sv
+			let g:CD_dsp_wrap_len = s:CD_dsp_wrap_len_sv
+			let s:old_path_tails = []
+		endif
+		return
+	elseif a:cmd =~? '^fsize'
+		if s:want_info =~ 'fsize'
+			let s:want_info = substitute( s:want_info, ',*fsize', '', '' )
+		else
+			let s:want_info .= ',fsize'
+		endif
+		return
+	elseif a:cmd =~? '^ftime'
+		if s:want_info =~ 'ftime'
+			let s:want_info = substitute( s:want_info, ',*ftime', '', '' )
+		else
+			let s:want_info .= ',ftime'
+		endif
+		return
+	elseif a:cmd =~? '^match_collapse'
+		if g:CD_match_collapse == 0
+			let g:CD_match_collapse = 1
+		else
+			let g:CD_match_collapse = 0
+		endif
+		return
+	elseif a:cmd =~? '^do_highlighting'
+		if g:CD_do_highlighting == 0
+			let g:CD_do_highlighting = 1
+		else
+			let g:CD_do_highlighting = 0
+		endif
+		return
+	elseif a:cmd =~? '^sort'
+		let g:CD_sort_func = a:cmd
+		let g:CD_sort_func = substitute( g:CD_sort_func, '^sort\s*', '', '' )
+		let g:CD_sort_func = substitute( g:CD_sort_func, '\s*:\s*$', '', '' )
+		return
 	else
 		let s:Cmd = a:cmd
 		let s:Cmd = substitute( s:Cmd, '\s*:$', '', '' )
 		return a:dir
 	endif
 
-	let cmd = input( prompt, "" )
 
 	if cmd == '' | return a:dir | endif
 
@@ -1245,16 +1485,23 @@ endfunction
 
 
 
+" For now, caching is disabled, since it doesn't
+" seem to be a bottle neck:
+"
 let s:isdirectory_cached_cache = {}
 function! s:isdirectory_cached( dir )
 	if a:dir == '' | return | endif
-	if has_key( s:isdirectory_cached_cache, a:dir )
-		"echomsg 'cached ' . a:dir
-	else
-		let s:isdirectory_cached_cache[ a:dir ] = isdirectory( a:dir )
-	endif
-	return s:isdirectory_cached_cache[ a:dir ]
+
+	return isdirectory( a:dir )
+
+"	if has_key( s:isdirectory_cached_cache, a:dir )
+"		"echomsg 'cached ' . a:dir
+"	else
+"		let s:isdirectory_cached_cache[ a:dir ] = isdirectory( a:dir )
+"	endif
+"	return s:isdirectory_cached_cache[ a:dir ]
 endfunction
+
 
 
 
@@ -1273,6 +1520,8 @@ function! s:hl_syntax( path, hl )
 	endif
 	return do
 endfunction
+
+
 
 
 
@@ -1302,6 +1551,12 @@ function! s:hl_regex( path )
 					\ . repeat( '.', strlen( s:highlight_table[ a:path ].chunks_raw[idx] ) )
 	endfor
 
+	" Don't include the trailiing slash, so it can be highlighted
+	" differently:
+"	if a:path =~ '/$'
+"		let regex = substitute( regex, '.$', '', '' )
+"	endif
+
 	"let regex .= ')\ze($|[* ])'
 	let regex .= ')'
 
@@ -1316,8 +1571,9 @@ endfunction
 
 
 let s:old_paths = []
+let s:want_info = ''
 
-function! s:Format_paths( path_tails )
+function! s:Format_paths( base_dir, path_tails )
 	if len( a:path_tails ) < 1 | return [] | endif
 
 	if exists('s:old_path_tails') && a:path_tails == s:old_path_tails
@@ -1325,15 +1581,34 @@ function! s:Format_paths( path_tails )
 	endif
 	let s:old_path_tails = a:path_tails
 
+	let base_dir = a:base_dir 
+	if base_dir !~ '/$'
+		let base_dir = s:fnamemodify_pc( base_dir, ':h' )
+	endif
+
 	let path_tails = deepcopy( a:path_tails )
 	let path_lens = deepcopy( path_tails )
 	call map( path_lens, 'strlen(v:val)' )
 	let longest_path = max( path_lens )
-	let longest = min( [longest_path, g:CD_dsp_wrap_len ] )		" 19+1 space divides evenly usually
+
+	let info_len = 0
+	let info_len += ( s:want_info =~ 'ftime' ? 21 : 0 )
+	let info_len += ( s:want_info =~ 'fsize' ? 8 : 0 )
+
+	if g:CD_dsp_wrap_len > 0
+
+		let longest = min( [longest_path, g:CD_dsp_wrap_len ] )		" 19+1 space divides evenly usually
+
+	else
+		let longest = longest_path + info_len
+
+	endif
 
 	if len( path_tails ) < 8
-		let longest = longest_path
+		let longest = longest_path + info_len
 	endif
+
+	let longest = max( [longest, 8 ] )
 
 	let s:out_chunks = []
 
@@ -1342,11 +1617,28 @@ function! s:Format_paths( path_tails )
 	unlet! s:highlight_table
 	let s:highlight_table = {}
 
+	let tst = 0
+
 	for path in deepcopy( path_tails )
 
 		let path_copy = path
 		"let path_copy = substitute( path, '/*$', '', '' )
 		let s:highlight_table[ path_copy ] = {}
+
+		let fsize = getfsize( base_dir . '/' . path )
+		let ftime = getftime( base_dir . '/' . path )
+		let ftime = strftime( '%y/%m/%d;%H:%M:%S', ftime )
+
+		let info = ''
+
+		if s:want_info =~ 'fsize' && !s:isdirectory_cached( path )
+			let info = ' ' . fsize
+		endif
+
+		if s:want_info =~ 'ftime'
+			let info .= ' ' . ftime
+		endif
+
 
 		" MSwin isn't supported correctly:
 		if !s:isdirectory_cached( path_copy )
@@ -1363,6 +1655,12 @@ function! s:Format_paths( path_tails )
 		let s:highlight_table[ path_copy ].chunks_raw = []
 		let fmt = "%-" . longest . "." . longest . "s "
 
+		if info != ''
+			let dots = longest - strlen( path ) - strlen( info ) - 2
+			let dots = dots > 1 ? repeat( '_', dots ) : ';'
+			let path .= ' ' . dots . info . ' ' 
+		endif
+
 		while strlen( path ) > longest 
 			let part = strpart( path, 0, longest - 1 - 1 ) . '>'
 			let s:highlight_table[ path_copy ].chunks_raw += [ part ]
@@ -1370,6 +1668,8 @@ function! s:Format_paths( path_tails )
 			let seg = printf( fmt, part )
 			let s:out_chunks += [ seg ]
 			let s:highlight_table[ path_copy ].chunks += [ seg ]
+			"echo tst . ',' . longest . ',' . longest_path . ',(' . path . ')'
+			"let tst+=1
 		endwhile
 
 		let s:highlight_table[ path_copy ].chunks_raw += [ path ]
@@ -1428,22 +1728,33 @@ endfunction
 
 function! s:Format_aliases( aliases )
 	if len( a:aliases ) < 1 | return [] | endif
-	let alias_lens = deepcopy( a:aliases )
+
+	function! s:expand_opt(...)
+		return eval( a:1 )
+	endfunction
+
+	let expanded_aliases = []
+	for alias in a:aliases
+		let alias = substitute( alias, '%{\([^}]*\)}', '\=s:expand_opt( submatch(1) )', '' )
+		let expanded_aliases += [ alias ]
+	endfor
+
+	let alias_lens = deepcopy( expanded_aliases )
 	call map( alias_lens, 'strlen(v:val)' )
 	let longest = max( alias_lens )
-	let longest = min( [longest, 20] )
+	"let longest = min( [longest, 20] )
 	let fmt = "%" . longest . "s "
+
 	let out_aliases = []
-	let col = 1
-	let lines = 0
-	for alias in a:aliases
-		function! s:expand_opt(...)
-			return eval( a:1 )
-		endfunction
-		let alias1 = substitute( alias, '%{\([^}]*\)}', '\=s:expand_opt( submatch(1) )', '' )
-		let alias1 = printf( fmt, alias1 ) . '>>' . g:CD_aliases[ alias ]
-		let out_aliases += [ alias1 ]
-		let lines += 1
+	"let col = 1
+	"let lines = 0
+
+	for idx in range( 0, len( a:aliases ) - 1 )
+		let alias = a:aliases[ idx ]
+		let expanded_alias = expanded_aliases[ idx ]
+		let s = printf( fmt, expanded_alias ) . '>>' . g:CD_aliases[ alias ]
+		let out_aliases += [ s ]
+		"let lines += 1
 	endfor
 
 	return out_aliases
@@ -1457,14 +1768,14 @@ function! s:Get_paths( in_path )
 	let in_path = a:in_path
 
 	" On windows, at least, reading the directory files can be slow:
-	let key = s:Cmd . ' ' . in_path
-	if has_key( g:CD_glob_cache, key )
-		if g:CD_glob_cache[ key ].timestamp ==
-		\ getftime( g:CD_glob_cache[ key ].dir )
-			"echomsg 'returning cached ' . key
-			return g:CD_glob_cache[ key ].paths 
-		endif
-	endif
+"	let key = s:Cmd . ' ' . in_path
+"	if has_key( g:CD_glob_cache, key )
+"		if g:CD_glob_cache[ key ].timestamp ==
+"		\ getftime( g:CD_glob_cache[ key ].dir )
+"			"echomsg 'returning cached ' . key
+"			return g:CD_glob_cache[ key ].paths 
+"		endif
+"	endif
 
 	if s:isdirectory_cached( in_path )
 		let dir = in_path
@@ -1475,17 +1786,19 @@ function! s:Get_paths( in_path )
 		return []
 	endif
 
-	let g:CD_glob_cache[ key ] = {}
-	let g:CD_glob_cache[ key ].dir = dir
-
-	let g:CD_glob_cache[ key ].timestamp =
-		\ getftime( g:CD_glob_cache[ key ].dir )
+"	let g:CD_glob_cache[ key ] = {}
+"	let g:CD_glob_cache[ key ].dir = dir
+"
+"	let g:CD_glob_cache[ key ].timestamp =
+"		\ getftime( g:CD_glob_cache[ key ].dir )
 
 	let paths = []
 
 	let in_path = in_path =~ '\*$' ? in_path : in_path . '*'
 
+	"echomsg 'in_path='.in_path
 	let globs = glob( in_path )
+	"echomsg 'globs='.globs
 	if in_path =~ '/\*$'
 
 		" get directories normally hidden with a "."
@@ -1502,14 +1815,69 @@ function! s:Get_paths( in_path )
 		endif
 	endfor
 
-	let paths = sort( paths )
 
-	let g:CD_glob_cache[ key ].paths = paths
+
+	if g:CD_sort_func == '' || g:CD_sort_func == 'default'
+		let paths = sort( paths )
+	else
+		let paths = {g:CD_sort_func}( paths )
+	endif
+
+"	if in_path =~ '\*\*'
+"		"echomsg 'path='.in_path.', globs='.globs
+"		echomsg 'path='.in_path.', paths='.string(paths)
+"	endif
 
 	return paths
 
 endfunction
 
+
+
+
+function! Sort_by_ftime( paths )
+	let s:path_times = {}
+	for path in a:paths
+		let s:path_times[ path ] = getftime( path )
+	endfor
+	return sort( a:paths, "Sort_by_ftime0")
+endfunction
+
+function! Sort_by_ftime0(i1, i2)
+	let t1 = s:path_times[ a:i1 ]
+	let t2 = s:path_times[ a:i2 ]
+	return t1 == t2 ? 0 : t1 < t2 ? 1 : -1
+endfunction
+
+
+
+function! Sort_by_extension( paths )
+	return sort( a:paths, "Sort_by_extension0" )
+endfunction
+
+function! Sort_by_extension0(i1, i2)
+	let ext1 = matchstr( a:i1, '\.[^\.]\+$' )
+	let ext2 = matchstr( a:i2, '\.[^\.]\+$' )
+
+	let ret = 0
+
+	if a:i1 == a:i2
+		let ret = 0
+	elseif ext1 == ext2
+		let ret = a:i1 > a:i2 ? 1 : -1
+	else
+		let ret = ext1 > ext2 ? 1 : -1
+	endif
+
+	return ret
+
+endfunction
+
+"	function! Dict_by_strlen(i1, i2)
+"		let len1 = strlen( s:sort_dict[ a:i1 ] )
+"		let len2 = strlen( s:sort_dict[ a:i2 ] )
+"		return len1 == len2 ? 0 : len1 > len2 ? 1 : -1
+"	endfunction
 
 
 
@@ -1522,22 +1890,30 @@ function! s:Get_matching_paths( paths, look )
 	"
 	let look = substitute( look, '\([^\\]\)\.\([^*]\)', '\1\\.\2', 'g' )
 
-	" make file type glob * into .*
+	" make file type glob * into regex .*
 	"
-	let look = substitute( look, '\([^.]\)\*', '\1.*', 'g' )
+	let look = substitute( look, '\([^.*]\)\*', '\1.*', 'g' )
 
-	let look = escape( look, ' ' )
+	" Fix when ** is changed to .** above
+	"let look = substitute( look, '\.\*\*', '[^/]*', 'g' )
+	let look = substitute( look, '\.\*\*', '.*', 'g' )
+
+	let look = escape( look, ' ~' )
 
 	for path in a:paths
 		try
 			if path =~? '^' . look 
 				let path = substitute( path, '/*$', '', '' )
 				let paths1 += [ path ]
+"echomsg "\nyes match: \nlook ".look . ', path=' . path
+"else
+"echomsg "\nno match: \nlook ".look . ', path=' . path
 			endif
 		catch
 			" Throw away regex errors
 		endtry
 	endfor
+"echomsg string(paths1)
 	return paths1
 endfunction
 
@@ -1595,10 +1971,10 @@ endfunction
 
 
 function! s:Save_cfg()
-	let s:RC_file = $HOME . '/.vim_cd_plus'
+	let g:CD_rc_file = $HOME . '/.vim_cd_plus'
 	silent 1 split
 	try
-		silent exe 'edit ' . s:RC_file
+		silent exe 'edit ' . g:CD_rc_file
 		setlocal bufhidden=wipe
 		%d _
 
@@ -1620,10 +1996,18 @@ function! s:Save_cfg()
 		endfor
 		call append("$", "\\ ]" )
 
+		call append("$", 'let g:CD_dsp_wrap_len = ' . g:CD_dsp_wrap_len )
+
+		call append("$", 'let g:CD_autochdir = "' . g:CD_autochdir . '"')
+
+		call append("$", 'let g:CD_match_collapse = ' . g:CD_match_collapse  )
+
+		call append("$", 'let g:CD_do_highlighting = ' . g:CD_do_highlighting  )
+
 		silent write!
 
 	catch
-		echomsg "Caught error " . v:errmsg . " when trying to save to config file, " . s:RC_file
+		echomsg "Caught error " . v:errmsg . " when trying to save to config file, " . g:CD_rc_file
 	finally
 		silent bwipe!
 	endtry
