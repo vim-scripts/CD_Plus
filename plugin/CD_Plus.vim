@@ -42,6 +42,9 @@
 "						-	Added match collapse listing option.
 "						-	Added highlighting toggle
 "						-	Added long listing toggle
+" Version:		2.2		Thu Jun 08, 06/08/2006 8:54:34 AM
+"						-	Fixed accumulating syntax entries
+"						-	Highlighting shortcuts to speed up tabbing
 "
 " Start_help_section {{{
 "
@@ -311,10 +314,16 @@ function! CD_Plus_init_highlight()
 endfunction
 
 
+"let s:old_hl_paths = []
 function! CD_Plus_hl_set( paths )
-	syn clear
+	"syn clear
 
 	if !g:CD_do_highlighting | return | endif
+
+"	if a:paths == s:old_hl_paths
+"		return
+"	endif
+"	let s:old_hl_paths = a:paths
 
 	call CD_Plus_init_highlight()
 	" Individual syntax highlighting
@@ -605,7 +614,7 @@ function! CD_Plus( cmd, path )
 			continue
 
 		elseif inp =~ '^\a:*$'
-			echomsg 'here'
+			"echomsg 'here'
 			call s:Add_input_stack( inp_stack, inp )
 
 		elseif inp =~ '/\./$'
@@ -731,7 +740,8 @@ function! CD_Plus( cmd, path )
 			let show_paths = deepcopy( matching_paths )
 		endif
 
-		let show_paths = map(  show_paths, 
+		let show_path_tails = deepcopy( show_paths )
+		let show_path_tails = map(  show_path_tails, 
 					\   ' s:fnamemodify_pc( v:val, ":t" ) '
 					\ . ' . '
 					\ . '( s:isdirectory_cached( v:val ) '
@@ -745,18 +755,22 @@ function! CD_Plus( cmd, path )
 
 		"if s:scrolling > -1
 			" nada
+		let lines = 0
 		if s:CD_history_idx > -1
 			exe "resize " . min( [ &lines / 3, len( s:CD_history ) ] )
 		else
 			silent %d _
-			let show_paths1 = s:Format_paths( inp, show_paths )
-			let show_aliases = s:Format_aliases( matching_aliases )
-			for str in show_paths1
+
+			for str in s:Format_paths( inp, show_path_tails )
+				let lines += 1
 				call append("$", str)
 			endfor
-			for str in show_aliases
+
+			for str in s:Format_aliases( matching_aliases )
+				let lines += 1
 				call append("$", str)
 			endfor
+
 			1d _
 			2match diffchange /^\s*\zs.*\ze >>/
 
@@ -781,10 +795,11 @@ function! CD_Plus( cmd, path )
 			endif
 
 
-			call CD_Plus_hl_set( matching_paths )
+			"call CD_Plus_hl_set( matching_paths )
+			call CD_Plus_hl_set( show_paths )
 
 			" Resize to fit
-			let lines = len( show_paths1 + show_aliases )
+			"let lines = len( show_paths1 + show_aliases )
 			if lines > s:cd_winheight
 				let s:cd_winheight = lines 
 				exe "resize " . s:cd_winheight
@@ -803,6 +818,10 @@ function! CD_Plus( cmd, path )
 		" ------------------------------------------------------------
 		"  Process a character
 		"
+		" Loop here for operations that should be instant, like scrolling,
+		" tab, etc.
+		"
+		let syn_cleared = 0
 		while 1
 			redraw
 
@@ -827,13 +846,24 @@ function! CD_Plus( cmd, path )
 			if inp_char =~# "\\v(\<c-e>|\<c-y>|\<c-d>|\<c-b>)" 
 				exe "normal! " . inp_char
 			elseif	inp_char =~# "\\v(\<tab>|\<S-Tab>)" 
+				if len( matching_paths ) > 30
+					let syn_cleared = 1
+					syn clear
+					if s:Cmd =~ 'cd'
+						syn match directory /.*/
+					else
+						syn match comment /.*/
+					endif
+				endif
 				let inp = s:Do_tab( inp_char, inp, matching_paths )
 			else
 				break
 			endif
-
 		endwhile
 
+		if syn_cleared
+			call CD_Plus_hl_set( matching_paths )
+		endif
 
 		if inp == ''
 			if inp_char == '/'
@@ -851,9 +881,10 @@ function! CD_Plus( cmd, path )
 		if	inp_char =~# "\\v(\<esc>|\<c-c>)" 
 			normal :
 			break
-		" ------------------------------------------------------------
+			" ------------------------------------------------------------
 		elseif	inp_char =~# "\\v(\<c-w>|\<c-h>|\<bs>)" 
 			if len( inp_stack ) > 1 && inp_char !~ "\<c-w>"
+						\&& s:tab_path_list_idx == -1
 				call remove( inp_stack, -1 )
 				let inp = remove( inp_stack, -1 )
 				let paths = s:Get_paths( inp )
@@ -963,8 +994,6 @@ function! CD_Plus( cmd, path )
 
 		" ------------------------------------------------------------
 		elseif	inp_char =~# "\\v(\<tab>|\<S-Tab>)" 
-
-
 
 			" End: tab handling
 			"
@@ -1159,7 +1188,8 @@ function! s:Do_tab( key, inp, paths )
 	let regex = s:hl_regex( inp_tail )
 
 	"echomsg string( s:highlight_table )
-	call cursor( s:highlight_table[ inp_tail ].chunks_coord[0].line, 0 )
+	call cursor( s:highlight_table[ inp_tail ].chunks_coord[0].line,
+				\ s:highlight_table[ inp_tail ].chunks_coord[0].col )
 	"echomsg s:highlight_table[ inp_tail ].chunks_coord[0].line
 
 	if regex != ''
@@ -1525,20 +1555,26 @@ endfunction
 
 
 
+let s:tst = 0
+
 function! s:hl_regex( path )
 	if !has_key( s:highlight_table, a:path )
 		"echomsg "CD_Plus err: bad path arg to hl_regex()"
 		return ''
 	endif
 
+	"echomsg 'len ' . len( s:highlight_table )
 	if has_key( s:highlight_table[ a:path ], 'regex' )
+		"echomsg 'returning cached'
 		return s:highlight_table[ a:path ].regex
 	else
+		"echomsg 'building regex'
 		let s:highlight_table[ a:path ].regex = ''
 	endif
 
 	let regex = '\v('
 	for idx in range( 0, len( s:highlight_table[ a:path ].chunks ) - 1 )
+		let s:tst += 1
 		if idx > 0
 			let regex .= '|'
 		endif
@@ -1562,6 +1598,7 @@ function! s:hl_regex( path )
 
 	let s:highlight_table[ a:path ].regex = regex
 
+	"echomsg 'tst ' . s:tst
 	return regex
 
 endfunction
