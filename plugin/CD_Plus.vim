@@ -8,7 +8,7 @@
 "                             ^^^^^^^^^^^^^^^^^^^^^^^
 "                             Comments, bugs, feedback welcome.
 " Created:		May, 2006
-" Updated:		Wed Jun 07, 06/07/2006 6:37:20 PM
+" Updated:		Wed Jun 21, 06/21/2006 3:47:46 AM
 " Requirements:	Vim 7
 "
 " Version:		1.0		Mon May 22, 05/22/2006 10:30:52 AM
@@ -42,9 +42,16 @@
 "						-	Added match collapse listing option.
 "						-	Added highlighting toggle
 "						-	Added long listing toggle
-" Version:		2.2		Thu Jun 08, 06/08/2006 8:54:34 AM
+" Version:		2.2		Sun Jun 11, 06/11/2006 6:15:10 PM
 "						-	Fixed accumulating syntax entries
 "						-	Highlighting shortcuts to speed up tabbing
+"						-	Added 'llt' command alias
+" Version:		2.3		Wed Jun 21, 06/21/2006 3:47:46 AM
+" 						-	added window size restore
+" 						-	changed // to 'literal' command
+" 						-	bug with fname and dirname sharing same prefix
+"
+"
 "
 " Start_help_section {{{
 "
@@ -134,7 +141,7 @@
 "			-	Match collapses (shortens) listings (default on; off means
 "				always show full directory listing).
 "
-"			-	Toggle highlighting on/off
+"			-	Toggle highlighting on/off (faster for long listings).
 "
 "
 "	'sort '		Sets sorting type. (default==alpha, time, size)
@@ -142,6 +149,9 @@
 "	'long'		Long listing toggle (sets wrap, fsize, etc.)
 "
 "	'help '		This listing.
+"
+"	'li teral '	Toggle literal input mode (don't always complete, allow
+"				non-existent names).
 "
 "	'history '	Browse the history.  A separate history is accessed
 "				depending on whether the current command is 'cd' or 'lcd',
@@ -175,10 +185,9 @@
 "
 "		Literal input:
 "
-"			'//' must be used to enter non-existing names.
+"			'li ' must be used to enter non-existing names.
 "
-"			Adding a / to the end of a line which already ends in / will
-"			toggle the  'g:CD_any_input'  option (default off).
+"			This will toggle the  'g:CD_any_input'  option (default off).
 "			Normally, keys which don't match anything are thrown away unless
 "			this option == 1.  It also affects what names can be taken
 "			from the ^N/^P history.  Aliases are not completed, and must be
@@ -221,7 +230,7 @@
 "									wrapping.
 "
 "			g:CD_any_input			0 or 1, the starting value for literal
-"									input (also set by trailing // toggle).
+"									input 
 "
 "			g:CD_scan_pc_drives		0 or 1, whether to attempt to discover
 "									pc drive names (like C:, D:, etc.) and
@@ -350,16 +359,19 @@ endfunction
 
 
 call extend( g:CD_aliases, { 
-				\   'set '		: 'set :',		's ' : 'set :'
-				\ , 'cd '		: 'cd :' 
-				\ , 'lcd '		: 'lcd :' 
-				\ , 'delete '	: 'delete :',	'd ' : 'delete :' 
-				\ , 'edit '		: 'edit :',		'e ' : 'edit :' 
-				\ , 'new '		: 'new :'
-				\ , 'help '		: 'help :'
-				\ , 'history '	: 'history :'
-				\ , ': '		: 'excmd :'
+				\   'set '				: 'set :',		's ' : 'set :'
+				\ , 'cd '				: 'cd :' 
+				\ , 'lcd '				: 'lcd :' 
+				\ , 'delete '			: 'delete :',	'd ' : 'delete :' 
+				\ , 'edit '				: 'edit :',		'e ' : 'edit :' 
+				\ , 'new '				: 'new :'
+				\ , 'help '				: 'help :'
+				\ , 'history '			: 'history :'
+				\ , ': '				: 'excmd :'
+				\ , 'li '				: 'literal :'
 				\ , 'long listing'		: 'long :' 
+				\ , 'll '				: 'long :' 
+				\ , 'llt '				: 'long_by_time :' 
 				\ ,	'o pt 1 column width ( %{g:CD_dsp_wrap_len} )' : 'wrap :'
 				\ ,	'o pt 2 auto change directory ( %{g:CD_autochdir} )' : 'autochdir :'
 				\ ,	'o pt 3 scan for new PC drives ' : 'pc_drive_scan :'
@@ -426,6 +438,13 @@ let s:CD_history_idx = -1
 
 function! CD_Plus( cmd, path )
 
+
+	if !g:CD_Plus_return_to
+		let s:save_view = winsaveview()
+		let s:save_winrestcmd = winrestcmd()
+	endif
+
+	let g:CD_Plus_return_to = 0
 
 	let s:tab_path_list = []
 	let s:tab_path_list_idx = -1
@@ -562,6 +581,9 @@ function! CD_Plus( cmd, path )
 		let longest_alias = s:Get_longest_common_alias( matching_aliases )
 		let longest_common = s:Get_longest_common_prefix( matching_path_tails + matching_aliases )
 
+		"echomsg 'longest_path='.longest_path
+		"echomsg 'longest_alias='.longest_alias
+		"echomsg '1longest_common='.longest_common
 
 		" Give priority to directory name in current directory, over same
 		" alias name:
@@ -585,6 +607,7 @@ function! CD_Plus( cmd, path )
 		endif
 
 
+		"echomsg '2longest_common='.longest_common
 
 
 		" ------------------------------------------------------------
@@ -608,12 +631,13 @@ function! CD_Plus( cmd, path )
 "			let s:Cmd = ''
 "
 "		elseif inp =~ '//$'
-		if inp =~ '//$'
-			let g:CD_any_input = !g:CD_any_input
-			let inp = substitute( inp, '/*$', '/', '' )
-			continue
 
-		elseif inp =~ '^\a:*$'
+"		if inp =~ '//$'
+"			let g:CD_any_input = !g:CD_any_input
+"			let inp = substitute( inp, '/*$', '/', '' )
+"			continue
+
+		if inp =~ '^\a:*$'
 			"echomsg 'here'
 			call s:Add_input_stack( inp_stack, inp )
 
@@ -782,10 +806,12 @@ function! CD_Plus( cmd, path )
 					" remove trailing backslashes until next input char
 					let inp_tail = substitute( inp_tail, '\\$', '', '' )
 					let inp_tail = substitute( inp_tail, '\[$', '', '' )
+					let inp_tail = substitute( inp_tail, '^\.$', '\\.', '' )
 					let inp_tail = substitute( inp_tail, '\([^. *]*\)\*\([^. *]*\)', '\1[^ ]*\2', '' )
-					let s = 'match matched /\v(^|\s)\zs' . inp_tail . '/'
+					let s = 'match matched /\c\v(^|\s)\zs' . inp_tail . '/'
 					try
 						exe s
+						"echomsg s
 					catch
 					endtry
 					"echomsg s
@@ -796,7 +822,9 @@ function! CD_Plus( cmd, path )
 
 
 			"call CD_Plus_hl_set( matching_paths )
-			call CD_Plus_hl_set( show_paths )
+			"if len( matching_paths ) < 50
+				call CD_Plus_hl_set( show_paths )
+			"endif
 
 			" Resize to fit
 			"let lines = len( show_paths1 + show_aliases )
@@ -966,29 +994,35 @@ function! CD_Plus( cmd, path )
 
 			let inp = substitute( inp, '/*$', '', '' )
 
-			" Expand any globs:
-			"
-			let paths1 = s:Get_paths( inp )
-			if len( paths1 ) > 0
-				" Set inp to the first match, and then find matches
-				" under that.
-				let inp = paths1[0]
+			echomsg 'inp='.inp
+			if s:isdirectory_cached( inp )
 				let inp .= '/'
 				let paths = s:Get_paths( inp )
-			endif
+			elseif !filereadable( inp )
+				" Expand any globs:
+				"
+				let paths1 = s:Get_paths( inp )
+				if len( paths1 ) > 0 
+					" Set inp to the first match, and then find matches
+					" under that.
+					let inp = paths1[0]
+					let inp .= '/'
+					let paths = s:Get_paths( inp )
 
-			if len( paths ) < 1 && !s:isdirectory_cached( inp ) && !filereadable( inp )
-						\ && inp !~ '\*'
-				let tail = s:fnamemodify_pc( inp, ':t' )
-				if has_key( g:CD_aliases, tail )
-					let inp = g:CD_aliases[ tail ]
-					if s:isdirectory_cached( inp )
-						let inp .= '/'
+				elseif len( paths ) < 1
+							\ && inp !~ '\*'
+					let tail = s:fnamemodify_pc( inp, ':t' )
+					if has_key( g:CD_aliases, tail )
+						let inp = g:CD_aliases[ tail ]
+						if s:isdirectory_cached( inp )
+							let inp .= '/'
+						endif
+						continue
+					elseif input("Create directory (" . inp . ")? ") =~? '^y'
+						call mkdir( inp, "p" )
 					endif
-					continue
-				elseif input("Create directory (" . inp . ")? ") =~? '^y'
-					call mkdir( inp, "p" )
 				endif
+			else
 			endif
 
 
@@ -1107,6 +1141,10 @@ function! CD_Plus( cmd, path )
 	endif
 
 
+	exe s:save_winrestcmd
+	call winrestview( s:save_view )
+	redraw
+
 	" ------------------------------------------------------------
 	"  Execute input and return, Part 2
 	"
@@ -1121,7 +1159,6 @@ function! CD_Plus( cmd, path )
 			endif
 		endtry
 
-		redraw
 		call histadd( "cmd", do )
 		echo do
 
@@ -1219,7 +1256,6 @@ let g:CD_Plus_return_to = 0
 
 function! CD_Plus_return_to( cmd, path, key )
 
-	let g:CD_Plus_return_to = 0
 
 	let path = a:path
 	let contents = getline( "." )
@@ -1411,6 +1447,9 @@ function! s:Do_commands( cmd, dir )
 		call s:scan_pc_drives()
 		let g:CD_scan_pc_drives = s
 		return
+	elseif a:cmd =~? '^literal'
+		let g:CD_any_input = !g:CD_any_input
+		return
 	elseif a:cmd =~? '^long'
 		if !exists('s:long_listings')
 			let s:want_info_sv = s:want_info
@@ -1419,11 +1458,16 @@ function! s:Do_commands( cmd, dir )
 			let g:CD_dsp_wrap_len = 0
 			let s:long_listings = 1
 			let s:old_path_tails = []
+			let s:CD_sort_func_sv = g:CD_sort_func
+			if a:cmd =~? 'long_by_time' 
+				let g:CD_sort_func = 'Sort_by_ftime'
+			endif
 		else
 			unlet! s:long_listings
 			let s:want_info = s:want_info_sv
 			let g:CD_dsp_wrap_len = s:CD_dsp_wrap_len_sv
 			let s:old_path_tails = []
+			let g:CD_sort_func = s:CD_sort_func_sv
 		endif
 		return
 	elseif a:cmd =~? '^fsize'
@@ -1957,10 +2001,12 @@ endfunction
 
 
 function! s:Get_matching_aliases( look )
+	let look = a:look
+	let look = substitute( look, '\.[^*]', '\\&', '' )
 	let out_list = []
 	for alias in sort( keys( g:CD_aliases ) )
 		try
-			if alias =~? '^' . a:look
+			if alias =~? '^' . look
 				let out_list += [ alias ]
 			endif
 		catch
